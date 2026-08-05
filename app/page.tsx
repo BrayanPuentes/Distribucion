@@ -214,7 +214,6 @@ function dateTimeLocalValue(date: Date) {
 
 function scheduleDefaults(): ScheduleFormValue {
   const start = new Date();
-  start.setDate(start.getDate() + 1);
   start.setHours(14, 0, 0, 0);
   const end = new Date(start);
   end.setHours(22, 0, 0, 0);
@@ -267,7 +266,6 @@ function applyShiftPreset(form: ScheduleFormValue, shift: string) {
 function resolveScheduleTiming(
   form: ScheduleFormValue,
   scheduled: ScheduledDistribution[],
-  now = Date.now(),
 ) {
   const startTimestamp = Date.parse(form.startsAt);
   const endTimestamp = Date.parse(form.endsAt);
@@ -278,9 +276,6 @@ function resolveScheduleTiming(
   const endsAt = new Date(endTimestamp).toISOString();
   if (endTimestamp <= startTimestamp) {
     return { error: "La hora final debe ser posterior a la hora inicial." };
-  }
-  if (!form.id && startTimestamp <= now) {
-    return { error: "La programación debe iniciar en una fecha futura." };
   }
   if (schedulesOverlap(scheduled, startsAt, endsAt, form.id)) {
     return { error: "La franja se superpone con otra distribución programada." };
@@ -3023,7 +3018,6 @@ function ScheduleTimingFields({
   includeName?: boolean;
 }) {
   const knownShift = SHIFT_PRESETS.some((item) => item.label === form.shift);
-  const minDate = dateTimeLocalValue(new Date()).slice(0, 10);
   return (
     <div className="form-grid schedule-timing-fields">
       {includeName && (
@@ -3040,7 +3034,6 @@ function ScheduleTimingFields({
         Fecha de activación
         <input
           type="date"
-          min={minDate}
           value={scheduleDateValue(form)}
           onInput={(event) => {
             const date = event.currentTarget.value;
