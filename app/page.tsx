@@ -117,7 +117,6 @@ type HistoryRecord = {
   id: number;
   effective_at: string;
   valid_until: string | null;
-  valid_until: string | null;
   shift: string;
   task: string;
   task_description: string;

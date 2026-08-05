@@ -69,8 +69,25 @@ async function ensureDatabase() {
   }
   if (!existingColumns.has("distribution_id")) {
     await db.prepare("ALTER TABLE history_events ADD COLUMN distribution_id INTEGER").run();
-    await db.prepare("CREATE INDEX IF NOT EXISTS history_distribution_idx ON history_events (distribution_id)").run();
   }
+  if (!existingColumns.has("valid_until")) {
+    await db.prepare("ALTER TABLE history_events ADD COLUMN valid_until TEXT").run();
+  }
+  const publicationColumns = await db
+    .prepare("PRAGMA table_info(published_distributions)")
+    .all<{ name: string }>();
+  const existingPublicationColumns = new Set(
+    publicationColumns.results.map((column) => column.name),
+  );
+  if (!existingPublicationColumns.has("schedule_id")) {
+    await db.prepare("ALTER TABLE published_distributions ADD COLUMN schedule_id INTEGER").run();
+  }
+  if (!existingPublicationColumns.has("valid_until")) {
+    await db.prepare("ALTER TABLE published_distributions ADD COLUMN valid_until TEXT").run();
+  }
+  await db.batch([
+    db.prepare("CREATE INDEX IF NOT EXISTS published_schedule_idx ON published_distributions (schedule_id)"),
+  ]);
   await db
     .prepare("INSERT OR IGNORE INTO app_state (id, payload, revision) VALUES (1, ?, 1)")
     .bind(JSON.stringify(initialState))
@@ -405,18 +422,6 @@ async function registerMissingHistoricalSchedules(
         groups: schedule.groups.length,
       },
     );
-  }
-  if (!existingColumns.has("valid_until")) {
-    await db.prepare("ALTER TABLE history_events ADD COLUMN valid_until TEXT").run();
-  }
-  const publicationColumns = await db.prepare("PRAGMA table_info(published_distributions)").all<{ name: string }>();
-  const existingPublicationColumns = new Set(publicationColumns.results.map((column) => column.name));
-  if (!existingPublicationColumns.has("schedule_id")) {
-    await db.prepare("ALTER TABLE published_distributions ADD COLUMN schedule_id INTEGER").run();
-    await db.prepare("CREATE INDEX IF NOT EXISTS published_schedule_idx ON published_distributions (schedule_id)").run();
-  }
-  if (!existingPublicationColumns.has("valid_until")) {
-    await db.prepare("ALTER TABLE published_distributions ADD COLUMN valid_until TEXT").run();
   }
 }
 
