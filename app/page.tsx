@@ -116,6 +116,8 @@ type UserRecord = AuthSession & {
 type HistoryRecord = {
   id: number;
   effective_at: string;
+  valid_until: string | null;
+  valid_until: string | null;
   shift: string;
   task: string;
   task_description: string;
@@ -2214,8 +2216,8 @@ function SchedulePage({
           <div className="section-title"><div><h2>Programaciones anteriores</h2><p>Se conservan para trazabilidad</p></div></div>
           <div className="compact-schedule-table">
             {recent.map((item) => (
-              <button key={item.id} onClick={() => view(item)}>
-                <span>{formatDateTime(item.startsAt)}</span><strong>{item.name}</strong><i>{item.status}</i><Eye size={15} />
+              <button key={item.id} onClick={() => isLeader ? edit(item) : view(item)} title={isLeader ? "Editar distribución anterior" : "Ver distribución"}>
+                <span>{formatDate(item.startsAt)} · {formatTime(item.startsAt)}–{formatTime(item.endsAt)}</span><strong>{item.name}</strong><i>{item.status}</i>{isLeader ? <Pencil size={15} /> : <Eye size={15} />}
               </button>
             ))}
           </div>
@@ -2238,6 +2240,7 @@ function HistoryPage({
     dateValue: record.effective_at.slice(0, 10),
     date: formatDate(record.effective_at),
     time: formatTime(record.effective_at),
+    endTime: record.valid_until ? formatTime(record.valid_until) : "Sin hora final",
     shift: record.shift,
     task: record.task,
     description: record.task_description || "",
@@ -2305,11 +2308,11 @@ function HistoryPage({
       <div className="filter-results"><strong>{filtered.length}</strong> registros encontrados</div>
       <div className="history-table-wrap">
         <table className="history-table">
-          <thead><tr><th>Fecha y hora efectiva</th><th>Tarea y alcance</th><th>Particularidad asignada</th><th>Responsable</th><th>Grupo</th><th>Motivo / evento</th><th>Versión</th></tr></thead>
+          <thead><tr><th>Fecha y rango de vigencia</th><th>Tarea y alcance</th><th>Particularidad asignada</th><th>Responsable</th><th>Grupo</th><th>Motivo / evento</th><th>Versión</th></tr></thead>
           <tbody>
             {filtered.map((record) => (
               <tr key={record.id}>
-                <td><strong>{record.date}</strong><span>{record.time}</span></td>
+                <td><strong>{record.date}</strong><span>{record.time}–{record.endTime}</span></td>
                 <td><span className="task-table"><ClipboardCheck size={15} /><span><strong>{record.task}</strong>{record.description && <small>{record.description}</small>}</span></span></td>
                 <td><span className={record.particularity ? "history-note" : "history-note history-note-empty"}>{record.particularity || "Sin particularidad registrada"}</span></td>
                 <td>{record.analyst}</td>
@@ -2406,7 +2409,7 @@ function PublishedDistributionsPanel({ items, isLeader, action }: { items: Publi
     <section className="published-panel">
       <div className="section-title section-title-compact"><div><h3>Distribuciones publicadas</h3><p>Versiones que llegaron a estar vigentes.</p></div><label className="archive-toggle"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> Mostrar archivadas</label></div>
       <div className="published-list">
-        {visible.map((item) => <article key={item.id} className={item.status === "archived" ? "published-archived" : ""}><div><strong>{item.name}</strong><span>{formatDateTime(item.effective_at)} · {item.shift} · por {item.created_by}</span>{item.archive_reason && <small>Archivada por {item.archived_by}: {item.archive_reason}</small>}</div><div className="card-actions">{item.is_current ? <span className="success-pill">Vigente</span> : item.status === "archived" ? <span className="neutral-pill">Archivada</span> : <span className="neutral-pill">Anterior</span>}{isLeader && item.status === "archived" && <button className="icon-text-button" onClick={() => action("restore", item)}><RotateCcw size={15} /> Restaurar</button>}{isLeader && item.status !== "archived" && <button className="icon-text-button" onClick={() => action("archive", item)}><History size={15} /> Archivar</button>}{isLeader && <button className="icon-text-button danger" onClick={() => action("delete", item)}><Trash2 size={15} /> Eliminar</button>}</div></article>)}
+        {visible.map((item) => <article key={item.id} className={item.status === "archived" ? "published-archived" : ""}><div><strong>{item.name}</strong><span>{formatDate(item.effective_at)} · {formatTime(item.effective_at)}–{item.valid_until ? formatTime(item.valid_until) : "sin hora final"} · {item.shift} · por {item.created_by}</span>{item.archive_reason && <small>Archivada por {item.archived_by}: {item.archive_reason}</small>}</div><div className="card-actions">{item.is_current ? <span className="success-pill">Vigente</span> : item.status === "archived" ? <span className="neutral-pill">Archivada</span> : <span className="neutral-pill">Anterior</span>}{isLeader && item.status === "archived" && <button className="icon-text-button" onClick={() => action("restore", item)}><RotateCcw size={15} /> Restaurar</button>}{isLeader && item.status !== "archived" && <button className="icon-text-button" onClick={() => action("archive", item)}><History size={15} /> Archivar</button>}{isLeader && <button className="icon-text-button danger" onClick={() => action("delete", item)}><Trash2 size={15} /> Eliminar</button>}</div></article>)}
         {!visible.length && <p className="empty-history">No hay distribuciones publicadas en este filtro.</p>}
       </div>
     </section>
