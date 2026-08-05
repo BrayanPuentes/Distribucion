@@ -309,9 +309,90 @@ function historyStatements(
   });
 }
 
+async function registerMissingHistoricalSchedules(
+  state: AppState,
+  version: number,
+) {
+  const expiredSchedules = state.scheduled.filter(
+    (schedule) => schedule.status === "Expirada",
+  );
+  if (!expiredSchedules.length) return;
+
+  const db = database();
+  for (const schedule of expiredSchedules) {
+    const existing = await db
+      .prepare(
+        "SELECT id FROM published_distributions WHERE name = ? AND effective_at = ? LIMIT 1",
+      )
+      .bind(schedule.name, schedule.startsAt)
+      .first<{ id: number }>();
+    if (existing) continue;
+
+    const actor = schedule.createdBy || "Sistema";
+    const publication = await db
+      .prepare(
+        "INSERT INTO published_distributions (name, effective_at, shift, snapshot, status, is_current, created_by) VALUES (?, ?, ?, ?, 'active', 0, ?)",
+      )
+      .bind(
+        schedule.name,
+        schedule.startsAt,
+        schedule.shift,
+        JSON.stringify({
+          groups: schedule.groups,
+          tasks: state.tasks,
+          analysts: state.analysts,
+          startsAt: schedule.startsAt,
+          endsAt: schedule.endsAt,
+          note: schedule.note,
+        }),
+        actor,
+      )
+      .run();
+    const distributionId = Number(publication.meta.last_row_id);
+    const statements = historyStatements(
+      db,
+      state,
+      schedule.groups,
+      schedule.startsAt,
+      schedule.shift,
+      `Registro histórico: ${schedule.name}`,
+      version,
+      actor,
+      distributionId,
+    );
+    if (statements.length) await db.batch(statements);
+    await db
+      .prepare("INSERT INTO audit_events (action, detail, actor) VALUES (?, ?, ?)")
+      .bind(
+        "DISTRIBUCION_HISTORICA_REGISTRADA",
+        `${schedule.name} · ${schedule.startsAt}–${schedule.endsAt}`,
+        actor,
+      )
+      .run();
+    await writeLog(
+      "INFO",
+      "PROGRAMACION",
+      "REGISTRO_HISTORICO",
+      `Se registró ${schedule.name} como distribución histórica.`,
+      actor,
+      "",
+      {
+        scheduleId: schedule.id,
+        distributionId,
+        startsAt: schedule.startsAt,
+        endsAt: schedule.endsAt,
+        groups: schedule.groups.length,
+      },
+    );
+  }
+}
+
 async function activateDueSchedule(current: Awaited<ReturnType<typeof readState>>) {
   const resolution = resolveScheduledDistributions(current.state);
-  if (!resolution.changed) return current;
+  if (!resolution.changed) {
+    await registerMissingHistoricalSchedules(current.state, current.revision);
+    return current;
+  }
   const { state, activated: due } = resolution;
 
   const validation = validateState(state);
@@ -371,6 +452,7 @@ async function activateDueSchedule(current: Awaited<ReturnType<typeof readState>
       { scheduleId: due.id, startsAt: due.startsAt, groups: due.groups.length },
     );
   }
+  await registerMissingHistoricalSchedules(state, nextRevision);
   return { state, revision: nextRevision, updatedAt: new Date().toISOString() };
 }
 

@@ -1088,9 +1088,14 @@ export default function HomePage() {
       setEditing(null);
       setNotice({
         type: "success",
-        message: existing ? "La distribución fue reprogramada." : "La distribución futura quedó programada.",
+        message:
+          Date.parse(saved.endsAt) <= Date.now()
+            ? "La distribución anterior quedó registrada y fue agregada al histórico."
+            : existing
+              ? "La distribución fue reprogramada."
+              : "La distribución quedó programada.",
       });
-      setActivePage("Programación");
+      setActivePage(Date.parse(saved.endsAt) <= Date.now() ? "Histórico" : "Programación");
     } catch (error) {
       reportError(error, "No fue posible guardar la programación.");
     }
