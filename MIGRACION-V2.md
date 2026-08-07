@@ -1,5 +1,9 @@
 # Distribución Operativa V2
 
+## Actualización 2.1: rotación justa
+
+La aplicación agrega de forma automática `task_id`, `analyst_id` y `group_id` al histórico. No elimines ni recrees D1. Los registros anteriores siguen participando en la rotación mediante sus nombres; los nuevos registros utilizarán identificadores estables.
+
 ## Alcance
 
 La V2 reemplaza el reparto por puntajes con plantillas fijas configurables por líderes. Cada plantilla corresponde a una combinación de turno y cantidad de analistas.

@@ -100,6 +100,22 @@ export type HydratedGroup = Omit<GroupRecord, "taskIds"> & { tasks: Task[] };
 export type ValidationResult = { valid: boolean; errors: string[] };
 export type ScheduleResolution = { state: AppState; changed: boolean; activated: ScheduledDistribution | null };
 
+export type RotationHistoryRecord = {
+  effectiveAt: string;
+  shift: string;
+  analystId: number | null;
+  analystName?: string;
+  groupName: string;
+  taskId: number | null;
+  taskName?: string;
+};
+
+export type RotationContext = {
+  history?: RotationHistoryRecord[];
+  scheduled?: ScheduledDistribution[];
+  effectiveAt?: string;
+};
+
 export const SHIFT_NAMES: ShiftName[] = ["Turno 6–2", "Turno 2–10", "Turno 10–6"];
 
 const task = (
@@ -294,18 +310,31 @@ export function generateDraftGroups(
   analystIds: number[],
   tasks: Task[],
   qaEnabled: boolean,
-  _analysts: Analyst[] = [],
+  analysts: Analyst[] = [],
   templates: DistributionTemplate[] = initialTemplates,
   shift: ShiftName = "Turno 2–10",
+  rotation: RotationContext = {},
 ): { groups: GroupRecord[]; error?: string } {
   if (!analystIds.length) return { groups: [], error: "Selecciona al menos un analista." };
   const template = templates.find((item) => item.active && item.shift === shift && item.analystCount === analystIds.length);
   if (!template) return { groups: [], error: `No existe una plantilla activa para ${shift} con ${analystIds.length} analistas.` };
   const applicable = new Set(activeTasksForAnalystCount(tasks, analystIds.length, qaEnabled, shift).map((item) => item.id));
-  const groups = template.groups.map((templateGroup, index) => ({
+  const effectiveTemplateGroups = template.groups.map((group) => ({
+    ...group,
+    taskIds: group.taskIds.filter((id) => applicable.has(id)),
+  }));
+  const rotatedAnalystIds = fairAnalystOrder(
+    analystIds,
+    effectiveTemplateGroups,
+    tasks,
+    analysts,
+    shift,
+    rotation,
+  );
+  const groups = effectiveTemplateGroups.map((templateGroup, index) => ({
     id: index + 1,
     name: templateGroup.name,
-    analystId: analystIds[index],
+    analystId: rotatedAnalystIds[index],
     taskIds: templateGroup.taskIds.filter((id) => applicable.has(id)),
     taskNotes: {},
   }));
@@ -320,9 +349,137 @@ export function generateDraftGroups(
   return { groups };
 }
 
-export function reconcileAfterAnalystRemoval(groups: HydratedGroup[], removedGroupId: number, tasks: Task[], qaEnabled: boolean, analysts: Analyst[], templates: DistributionTemplate[] = initialTemplates, shift: ShiftName = "Turno 2–10") {
+function normalizedRotationKey(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLocaleLowerCase("es");
+}
+
+type RotationAssignment = {
+  effectiveAt: number;
+  analystId: number;
+  groupKey: string;
+  taskIds: Set<number>;
+};
+
+function rotationAssignments(
+  analystIds: number[],
+  analysts: Analyst[],
+  tasks: Task[],
+  shift: ShiftName,
+  context: RotationContext,
+  targetTime: number,
+) {
+  const selected = new Set(analystIds);
+  const analystByName = new Map(
+    analysts.map((analyst) => [normalizedRotationKey(analyst.name), analyst.id]),
+  );
+  const taskByName = new Map(
+    tasks.map((item) => [normalizedRotationKey(item.name), item.id]),
+  );
+  const assignments = new Map<string, RotationAssignment>();
+  for (const record of context.history || []) {
+    if (record.shift !== shift) continue;
+    const effectiveAt = Date.parse(record.effectiveAt);
+    if (!Number.isFinite(effectiveAt) || effectiveAt >= targetTime) continue;
+    const analystId = record.analystId ?? analystByName.get(normalizedRotationKey(record.analystName || ""));
+    if (!analystId || !selected.has(analystId)) continue;
+    const groupKey = normalizedRotationKey(record.groupName);
+    const key = `${record.effectiveAt}|${analystId}|${groupKey}`;
+    const assignment = assignments.get(key) || { effectiveAt, analystId, groupKey, taskIds: new Set<number>() };
+    const taskId = record.taskId ?? taskByName.get(normalizedRotationKey(record.taskName || ""));
+    if (taskId) assignment.taskIds.add(taskId);
+    assignments.set(key, assignment);
+  }
+  for (const schedule of context.scheduled || []) {
+    const effectiveAt = Date.parse(schedule.startsAt);
+    if (
+      schedule.shift !== shift ||
+      !Number.isFinite(effectiveAt) ||
+      effectiveAt >= targetTime ||
+      !["Programada", "Requiere revisión"].includes(schedule.status)
+    ) continue;
+    for (const group of schedule.groups) {
+      if (!selected.has(group.analystId)) continue;
+      assignments.set(`schedule:${schedule.id}:${group.id}`, {
+        effectiveAt,
+        analystId: group.analystId,
+        groupKey: normalizedRotationKey(group.name),
+        taskIds: new Set(group.taskIds),
+      });
+    }
+  }
+  return [...assignments.values()];
+}
+
+/**
+ * Asigna globalmente los grupos a los analistas con menor exposición reciente.
+ * La optimización por máscara evita que una mejora individual perjudique la
+ * equidad del resto del equipo y es suficientemente pequeña para 1–9 personas.
+ */
+export function fairAnalystOrder(
+  analystIds: number[],
+  templateGroups: TemplateGroup[],
+  tasks: Task[],
+  analysts: Analyst[],
+  shift: ShiftName,
+  context: RotationContext = {},
+) {
+  if (analystIds.length < 2 || templateGroups.length !== analystIds.length) return [...analystIds];
+  const parsedTarget = Date.parse(context.effectiveAt || "");
+  const targetTime = Number.isFinite(parsedTarget) ? parsedTarget : Date.now();
+  const weekStart = targetTime - 7 * 24 * 60 * 60 * 1000;
+  const monthStart = targetTime - 31 * 24 * 60 * 60 * 1000;
+  const assignments = rotationAssignments(analystIds, analysts, tasks, shift, context, targetTime);
+  const latestByAnalyst = new Map<number, RotationAssignment>();
+  for (const assignment of assignments) {
+    const latest = latestByAnalyst.get(assignment.analystId);
+    if (!latest || assignment.effectiveAt > latest.effectiveAt) latestByAnalyst.set(assignment.analystId, assignment);
+  }
+  const cost = templateGroups.map((group) => {
+    const groupKey = normalizedRotationKey(group.name);
+    const groupTasks = new Set(group.taskIds);
+    return analystIds.map((analystId) => {
+      let value = 0;
+      for (const assignment of assignments) {
+        if (assignment.analystId !== analystId || assignment.effectiveAt < monthStart) continue;
+        const weekly = assignment.effectiveAt >= weekStart;
+        if (assignment.groupKey === groupKey) value += weekly ? 10_000 : 1_000;
+        let sharedTasks = 0;
+        for (const taskId of assignment.taskIds) if (groupTasks.has(taskId)) sharedTasks += 1;
+        value += sharedTasks * (weekly ? 400 : 40);
+      }
+      if (latestByAnalyst.get(analystId)?.groupKey === groupKey) value += 20_000;
+      return value;
+    });
+  });
+  type Candidate = { cost: number; order: number[] };
+  let states = new Map<number, Candidate>([[0, { cost: 0, order: [] }]]);
+  for (let groupIndex = 0; groupIndex < templateGroups.length; groupIndex += 1) {
+    const next = new Map<number, Candidate>();
+    for (const [mask, candidate] of states) {
+      for (let analystIndex = 0; analystIndex < analystIds.length; analystIndex += 1) {
+        const bit = 1 << analystIndex;
+        if (mask & bit) continue;
+        const nextMask = mask | bit;
+        const proposal = {
+          cost: candidate.cost + cost[groupIndex][analystIndex],
+          order: [...candidate.order, analystIds[analystIndex]],
+        };
+        const current = next.get(nextMask);
+        if (!current || proposal.cost < current.cost) next.set(nextMask, proposal);
+      }
+    }
+    states = next;
+  }
+  return states.get((1 << analystIds.length) - 1)?.order || [...analystIds];
+}
+
+export function reconcileAfterAnalystRemoval(groups: HydratedGroup[], removedGroupId: number, tasks: Task[], qaEnabled: boolean, analysts: Analyst[], templates: DistributionTemplate[] = initialTemplates, shift: ShiftName = "Turno 2–10", rotation: RotationContext = {}) {
   const remaining = groups.filter((item) => item.id !== removedGroupId).map((item) => item.analystId);
-  const generated = generateDraftGroups(remaining, tasks, qaEnabled, analysts, templates, shift);
+  const generated = generateDraftGroups(remaining, tasks, qaEnabled, analysts, templates, shift, rotation);
   return { groups: generated.groups.length ? hydrateGroups(generated.groups, tasks) : groups, removedTasks: [] as Task[], error: generated.error };
 }
 

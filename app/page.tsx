@@ -122,13 +122,17 @@ type UserRecord = AuthSession & {
 
 type HistoryRecord = {
   id: number;
+  distribution_id: number | null;
   effective_at: string;
   valid_until: string | null;
   shift: string;
+  task_id: number | null;
   task: string;
   task_description: string;
   assignment_note: string;
+  analyst_id: number | null;
   analyst: string;
+  group_id: number | null;
   group_name: string;
   event: string;
   version: number;
@@ -781,15 +785,29 @@ export default function HomePage() {
         return;
       }
     }
+    const effectiveShift = scheduleIntent && plannedSchedule && SHIFT_NAMES.includes(plannedSchedule.shift as ShiftName)
+      ? plannedSchedule.shift as ShiftName
+      : draftShift;
     const result = generateDraftGroups(
       selectedAnalysts,
       tasks,
       qaEnabled,
       analysts,
       appState.templates,
-      scheduleIntent && plannedSchedule && SHIFT_NAMES.includes(plannedSchedule.shift as ShiftName)
-        ? plannedSchedule.shift as ShiftName
-        : draftShift,
+      effectiveShift,
+      {
+        effectiveAt: scheduleIntent && plannedSchedule ? plannedSchedule.startsAt : new Date().toISOString(),
+        history: historyRecords.map((record) => ({
+          effectiveAt: record.effective_at,
+          shift: record.shift,
+          analystId: record.analyst_id,
+          analystName: record.analyst,
+          groupName: record.group_name,
+          taskId: record.task_id,
+          taskName: record.task,
+        })),
+        scheduled: scheduled.filter((item) => item.id !== plannedSchedule?.id),
+      },
     );
     if (result.error) {
       setNotice({ type: "warning", message: result.error });
@@ -802,6 +820,7 @@ export default function HomePage() {
     setDraftGroups(hydrateGroups(result.groups, tasks));
     setSetupOpen(false);
     setEditing("new");
+    setNotice({ type: "info", message: `Rotación equilibrada para ${effectiveShift}: se priorizaron los grupos y tareas menos frecuentes de cada analista durante los últimos 7 y 30 días.` });
     recordClientLog("INFO", "GENERADOR", "GENERAR_BORRADOR", "Borrador generado correctamente.", {
       analysts: selectedAnalysts.length,
       qaEnabled,
@@ -888,6 +907,19 @@ export default function HomePage() {
         analysts,
         appState.templates,
         draftShift,
+        {
+          effectiveAt: plannedSchedule?.startsAt || new Date().toISOString(),
+          history: historyRecords.map((record) => ({
+            effectiveAt: record.effective_at,
+            shift: record.shift,
+            analystId: record.analyst_id,
+            analystName: record.analyst,
+            groupName: record.group_name,
+            taskId: record.task_id,
+            taskName: record.task,
+          })),
+          scheduled: scheduled.filter((item) => item.id !== plannedSchedule?.id),
+        },
       );
       if (result.error) {
         const message = result.error;
@@ -935,6 +967,19 @@ export default function HomePage() {
         analysts,
         appState.templates,
         draftShift,
+        {
+          effectiveAt: plannedSchedule?.startsAt || new Date().toISOString(),
+          history: historyRecords.map((record) => ({
+            effectiveAt: record.effective_at,
+            shift: record.shift,
+            analystId: record.analyst_id,
+            analystName: record.analyst,
+            groupName: record.group_name,
+            taskId: record.task_id,
+            taskName: record.task,
+          })),
+          scheduled: scheduled.filter((item) => item.id !== plannedSchedule?.id),
+        },
       );
       if (generated.error) {
         setNotice({ type: "warning", message: generated.error });
@@ -1038,6 +1083,7 @@ export default function HomePage() {
         detail: changeReason,
         module: "DISTRIBUCION",
         publish: true,
+        shift: draftShift,
       });
       setEditing(null);
       setPreviewOpen(false);
@@ -2816,10 +2862,6 @@ function DistributionSetup({
   const toggleAnalyst = (id: number) => {
     setSelected(selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id]);
   };
-  const qaAnalystId = qaEnabled ? selected.at(-1) : undefined;
-  const selectQaOwner = (id: number) => {
-    setSelected([...selected.filter((item) => item !== id), id]);
-  };
   const valid = selected.length >= minimum && selected.length <= maximum;
   return (
     <div className="modal-layer">
@@ -2879,21 +2921,9 @@ function DistributionSetup({
         <label className="qa-option">
           <input type="checkbox" checked={qaEnabled} onChange={(event) => setQaEnabled(event.target.checked)} />
           <span className="check-visual">{qaEnabled && <Check size={15} />}</span>
-          <span><strong>Habilitar tarea QA</strong><small>QA quedará separada y asignada exclusivamente a un analista.</small></span>
+          <span><strong>Habilitar tarea QA</strong><small>QA quedará separada y el motor elegirá a quien menos la haya realizado en este turno.</small></span>
         </label>
-        {qaEnabled && selected.length > 0 && (
-          <label className="qa-owner-field">
-            Responsable de QA
-            <select value={qaAnalystId} onChange={(event) => selectQaOwner(Number(event.target.value))}>
-              {selected.map((id) => {
-                const analyst = analysts.find((item) => item.id === id);
-                return analyst ? <option key={id} value={id}>{analyst.name}</option> : null;
-              })}
-            </select>
-            <small>Las demás personas determinan las tareas operativas y sus variantes.</small>
-          </label>
-        )}
-        <div className="setup-rule"><ShieldCheck size={17} /><span>La composición sale de la plantilla de {effectiveShift} para {selected.length} analistas. Podrás mover tareas en la previsualización antes de guardar.</span></div>
+        <div className="setup-rule"><ShieldCheck size={17} /><span>La plantilla define los grupos y el motor de rotación asigna a cada analista lo que menos ha realizado en este turno durante los últimos 7 y 30 días. Las programaciones previas también se tienen en cuenta y podrás hacer ajustes manuales en la previsualización.</span></div>
         {!valid && <div className="inline-warning"><AlertTriangle size={16} /> Selecciona entre {minimum} y {maximum} analistas para generar una distribución completa.</div>}
         <footer>
           <button className="button-secondary" onClick={close}>Cancelar</button>
