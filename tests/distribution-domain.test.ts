@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildScheduleLocalRange,
-  fairAnalystOrder,
   generateDraftGroups,
   initialState,
   initialTasks,
@@ -42,71 +41,6 @@ test("cada turno usa su catálogo operativo", () => {
   assert.equal(day.includes(30), false);
   assert.equal(night.includes(30), true);
   assert.equal(night.includes(23), true);
-});
-
-test("rota el grupo repetido hacia otro analista dentro del mismo turno", () => {
-  const groups = [
-    { id: 1, name: "Búsquedas", taskIds: [1] },
-    { id: 2, name: "Alertas", taskIds: [9] },
-  ];
-  const order = fairAnalystOrder([1, 2], groups, initialTasks, initialState.analysts, "Turno 2–10", {
-    effectiveAt: "2026-08-06T14:00:00.000Z",
-    history: [
-      { effectiveAt: "2026-08-05T14:00:00.000Z", shift: "Turno 2–10", analystId: 1, groupName: "Búsquedas", taskId: 1 },
-      { effectiveAt: "2026-08-05T14:00:00.000Z", shift: "Turno 2–10", analystId: 2, groupName: "Alertas", taskId: 9 },
-    ],
-  });
-  assert.deepEqual(order, [2, 1]);
-});
-
-test("equilibra también exposiciones del mes aunque estén fuera de la última semana", () => {
-  const groups = [
-    { id: 1, name: "Búsquedas", taskIds: [1] },
-    { id: 2, name: "Alertas", taskIds: [9] },
-  ];
-  const order = fairAnalystOrder([1, 2], groups, initialTasks, initialState.analysts, "Turno 2–10", {
-    effectiveAt: "2026-08-26T14:00:00.000Z",
-    history: [
-      { effectiveAt: "2026-08-06T14:00:00.000Z", shift: "Turno 2–10", analystId: 1, groupName: "Búsquedas", taskId: 1 },
-      { effectiveAt: "2026-08-06T14:00:00.000Z", shift: "Turno 2–10", analystId: 2, groupName: "Alertas", taskId: 9 },
-    ],
-  });
-  assert.deepEqual(order, [2, 1]);
-});
-
-test("la rotación de un turno no se contamina con asignaciones de otro", () => {
-  const groups = [
-    { id: 1, name: "Búsquedas", taskIds: [1] },
-    { id: 2, name: "Alertas", taskIds: [9] },
-  ];
-  const order = fairAnalystOrder([1, 2], groups, initialTasks, initialState.analysts, "Turno 6–2", {
-    effectiveAt: "2026-08-06T06:00:00.000Z",
-    history: [
-      { effectiveAt: "2026-08-05T14:00:00.000Z", shift: "Turno 2–10", analystId: 1, groupName: "Búsquedas", taskId: 1 },
-      { effectiveAt: "2026-08-05T14:00:00.000Z", shift: "Turno 2–10", analystId: 2, groupName: "Alertas", taskId: 9 },
-    ],
-  });
-  assert.deepEqual(order, [1, 2]);
-});
-
-test("las programaciones anteriores a la fecha objetivo participan en la rotación", () => {
-  const groups = [
-    { id: 1, name: "Búsquedas", taskIds: [1] },
-    { id: 2, name: "Alertas", taskIds: [9] },
-  ];
-  const scheduled = [{
-    id: 7, name: "Mañana", startsAt: "2026-08-07T14:00:00.000Z", endsAt: "2026-08-07T22:00:00.000Z",
-    shift: "Turno 2–10", status: "Programada", analystCount: 2,
-    groups: [
-      { id: 1, name: "Búsquedas", analystId: 1, taskIds: [1] },
-      { id: 2, name: "Alertas", analystId: 2, taskIds: [9] },
-    ],
-    createdAt: "", createdBy: "Líder", note: "",
-  }] as ScheduledDistribution[];
-  const order = fairAnalystOrder([1, 2], groups, initialTasks, initialState.analysts, "Turno 2–10", {
-    effectiveAt: "2026-08-08T14:00:00.000Z", scheduled,
-  });
-  assert.deepEqual(order, [2, 1]);
 });
 
 test("rechaza capacidades sin plantilla", () => {

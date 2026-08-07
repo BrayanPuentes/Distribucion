@@ -1,6 +1,4 @@
-# Distribución Operativa 2.1
-
-La asignación automática combina plantillas fijas con rotación justa por turno. El motor compara el histórico de los últimos 7 y 30 días, evita repeticiones consecutivas y considera las programaciones anteriores a la fecha que se está preparando. Los líderes conservan la reasignación manual antes de guardar.
+# Distribución Operativa
 
 Sistema local persistente para crear, revisar, publicar, programar y auditar
 distribuciones por turno.
