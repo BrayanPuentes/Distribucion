@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `users_analyst_unique` ON `users` (`analyst_id`);

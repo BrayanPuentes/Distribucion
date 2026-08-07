@@ -47,7 +47,7 @@ export class AuthError extends Error {
 }
 
 export const SESSION_COOKIE = "distribution_session";
-export const PASSWORD_ITERATIONS = 100_000;
+export const PASSWORD_ITERATIONS = 210_000;
 export const SESSION_DURATION_SECONDS = 12 * 60 * 60;
 
 const encoder = new TextEncoder();

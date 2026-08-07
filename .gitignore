@@ -41,13 +41,3 @@ next-env.d.ts
 /.sites-runtime/
 /outputs/
 /work/
-
-node_modules/
-.wrangler/
-.dev.vars
-.env
-.env.*
-dist/
-*.sql
-*.sqlite
-*.db

@@ -12,7 +12,7 @@ import {
   sessionCookie,
   verifyPassword,
   writeAuthLog,
-} from "../../../../lib/server/auth.ts";
+} from "../../../../lib/server/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -140,3 +140,4 @@ export async function POST(request: Request) {
     return authErrorResponse(error, requestId);
   }
 }
+

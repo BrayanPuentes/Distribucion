@@ -12,12 +12,9 @@ export const historyEvents = sqliteTable(
   "history_events",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
-    distributionId: integer("distribution_id"),
     effectiveAt: text("effective_at").notNull(),
     shift: text("shift").notNull(),
     task: text("task").notNull(),
-    taskDescription: text("task_description").notNull().default(""),
-    assignmentNote: text("assignment_note").notNull().default(""),
     analyst: text("analyst").notNull(),
     groupName: text("group_name").notNull(),
     event: text("event").notNull(),
@@ -29,27 +26,7 @@ export const historyEvents = sqliteTable(
     index("history_effective_idx").on(table.effectiveAt),
     index("history_task_idx").on(table.task),
     index("history_analyst_idx").on(table.analyst),
-    index("history_distribution_idx").on(table.distributionId),
   ],
-);
-
-export const publishedDistributions = sqliteTable(
-  "published_distributions",
-  {
-    id: integer("id").primaryKey({ autoIncrement: true }),
-    name: text("name").notNull(),
-    effectiveAt: text("effective_at").notNull(),
-    shift: text("shift").notNull(),
-    snapshot: text("snapshot").notNull(),
-    status: text("status", { enum: ["active", "archived"] }).notNull().default("active"),
-    isCurrent: integer("is_current", { mode: "boolean" }).notNull().default(false),
-    archivedAt: text("archived_at"),
-    archivedBy: text("archived_by"),
-    archiveReason: text("archive_reason"),
-    createdBy: text("created_by").notNull(),
-    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  },
-  (table) => [index("published_status_idx").on(table.status, table.effectiveAt)],
 );
 
 export const auditEvents = sqliteTable("audit_events", {

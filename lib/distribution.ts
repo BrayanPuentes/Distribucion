@@ -2,6 +2,8 @@ export type Role = "leader" | "analyst";
 
 export type AnalystStatus = "Disponible" | "Horario parcial" | "Ausente";
 
+export type ShiftName = "Turno 6–2" | "Turno 2–10" | "Turno 10–6";
+
 export type Analyst = {
   id: number;
   name: string;
@@ -10,8 +12,6 @@ export type Analyst = {
   status: AnalystStatus;
   active: boolean;
 };
-
-export type CriticalLane = string;
 
 export type TaskFamily = {
   id: string;
@@ -31,14 +31,16 @@ export type CriticalFront = {
 export type Task = {
   id: number;
   name: string;
+  /** Conservado solo para leer estados V1. El generador V2 no usa puntajes. */
   weight: number;
   category: string;
   active: boolean;
-  description: string;
-  defaultAssignmentNote: string;
+  description?: string;
+  defaultAssignmentNote?: string;
   minAnalysts: number;
   family?: string;
-  criticalLane?: CriticalLane;
+  criticalLane?: string;
+  shifts?: ShiftName[];
   qa?: boolean;
   exclusive?: boolean;
 };
@@ -51,12 +53,22 @@ export type GroupRecord = {
   taskNotes?: Record<string, string>;
 };
 
-export type ScheduleStatus =
-  | "Programada"
-  | "Requiere revisión"
-  | "Activada"
-  | "Cancelada"
-  | "Expirada";
+export type TemplateGroup = {
+  id: number;
+  name: string;
+  taskIds: number[];
+};
+
+export type DistributionTemplate = {
+  id: string;
+  name: string;
+  shift: ShiftName;
+  analystCount: number;
+  groups: TemplateGroup[];
+  active: boolean;
+};
+
+export type ScheduleStatus = "Programada" | "Requiere revisión" | "Activada" | "Cancelada" | "Expirada";
 
 export type ScheduledDistribution = {
   id: number;
@@ -78,510 +90,220 @@ export type AppState = {
   tasks: Task[];
   taskFamilies: TaskFamily[];
   criticalFronts: CriticalFront[];
+  templates: DistributionTemplate[];
   groups: GroupRecord[];
   scheduled: ScheduledDistribution[];
   activeScheduleId: number | null;
 };
 
-export type HydratedGroup = {
-  id: number;
-  name: string;
-  analystId: number;
-  tasks: Task[];
-  taskNotes: Record<number, string>;
+export type HydratedGroup = Omit<GroupRecord, "taskIds"> & { tasks: Task[] };
+export type ValidationResult = { valid: boolean; errors: string[] };
+export type ScheduleResolution = { state: AppState; changed: boolean; activated: ScheduledDistribution | null };
+
+export type RotationHistoryRecord = {
+  effectiveAt: string;
+  shift: string;
+  analystId: number | null;
+  analystName?: string;
+  groupName: string;
+  taskId: number | null;
+  taskName?: string;
 };
 
-export type ValidationResult = {
-  valid: boolean;
-  errors: string[];
+export type RotationContext = {
+  history?: RotationHistoryRecord[];
+  scheduled?: ScheduledDistribution[];
+  effectiveAt?: string;
 };
 
-export type ScheduleResolution = {
-  state: AppState;
-  changed: boolean;
-  activated: ScheduledDistribution | null;
-};
-
-export type ReconcileResult = {
-  groups: HydratedGroup[];
-  removedTasks: Task[];
-  error?: string;
-};
+export const SHIFT_NAMES: ShiftName[] = ["Turno 6–2", "Turno 2–10", "Turno 10–6"];
 
 const task = (
   id: number,
   name: string,
-  weight: number,
   category: string,
-  description: string,
-  options: Partial<
-    Omit<
-      Task,
-      "id" | "name" | "weight" | "category" | "active" | "description"
-    >
-  > = {},
+  options: Partial<Task> = {},
 ): Task => ({
   id,
   name,
-  weight,
   category,
+  weight: 1,
   active: true,
-  description,
+  minAnalysts: 1,
+  description: "",
   defaultAssignmentNote: "",
-  minAnalysts: 3,
   ...options,
 });
 
-/**
- * Catálogo reconstruido desde las plantillas operativas del Excel.
- * minAnalysts representa analistas operativos: el responsable de QA se
- * reserva aparte y no cuenta para activar variantes.
- */
+export const initialTasks: Task[] = [
+  task(1, "Compromised Card Searches", "Búsquedas", { family: "searches" }),
+  task(2, "Prepare/Open Compromised", "Búsquedas", { family: "searches" }),
+  task(3, "CBC - Store search", "Búsquedas", { family: "searches" }),
+  task(4, "In Progress Tickets Check", "Seguimiento", { family: "follow-up" }),
+  task(5, "In Progress Tickets Check 2", "Seguimiento", { family: "follow-up" }),
+  task(6, "Check teams notifications for ProactivityTA Ads", "Alertas", { family: "alerts" }),
+  task(7, "Brand Abuse Protection Manual Searches", "Búsquedas", { family: "searches" }),
+  task(8, "Check Threat Alerts 3", "Alertas", { family: "alerts", minAnalysts: 7 }),
+  task(9, "Check Threat Alerts 1", "Alertas", { family: "alerts" }),
+  task(10, "Check Threat Alerts 2", "Alertas", { family: "alerts" }),
+  task(11, "Check Twitter Notifications", "Alertas", { family: "alerts" }),
+  task(12, "Phish y redirect to phish Manual Searches", "Búsquedas", { family: "searches" }),
+  task(13, "NEW takedowns 1", "Takedowns", { family: "takedowns" }),
+  task(14, "NEW takedowns 2", "Takedowns", { family: "takedowns" }),
+  task(15, "NEW takedowns 3", "Takedowns", { family: "takedowns" }),
+  task(16, "Check providers replies", "Proveedores", { family: "providers" }),
+  task(17, "CheckTakedownAlerts", "Alertas", { family: "alerts" }),
+  task(18, "GFC Tracking", "Seguimiento", { family: "follow-up" }),
+  task(19, "Update Open Tickets - DBI", "Seguimiento", { family: "follow-up" }),
+  task(20, "Update Open Tickets - Mobile", "Seguimiento", { family: "follow-up" }),
+  task(21, "Update Open Tickets - Other and Disclosure", "Seguimiento", { family: "follow-up" }),
+  task(22, "Update Open Tickets - Phishing", "Seguimiento", { family: "follow-up" }),
+  task(23, "New Takedowns & Inprogress", "Takedowns", { family: "takedowns", shifts: ["Turno 10–6"] }),
+  task(24, "Update Open Tickets - DBI y Spoofing", "Seguimiento", { family: "follow-up", shifts: ["Turno 10–6"] }),
+  task(25, "Update Open Tickets - Phishing & Mobile Apps", "Seguimiento", { family: "follow-up", shifts: ["Turno 10–6"] }),
+  task(26, "Tickets QA", "Calidad", { family: "qa", qa: true, exclusive: true, minAnalysts: 5 }),
+  task(27, "Malvertising", "Monitoreo", { family: "specialized" }),
+  task(28, "Redirect Changes", "Redirects", { family: "redirects" }),
+  task(29, "Old Redirect", "Redirects", { family: "redirects" }),
+  task(30, "Japan blogs", "Monitoreo", { family: "specialized", shifts: ["Turno 10–6"] }),
+  task(31, "Búsquedas focalizadas", "Búsquedas", { family: "specialized", minAnalysts: 9 }),
+];
+
+export const initialTaskFamilies: TaskFamily[] = [
+  { id: "searches", name: "Búsquedas", description: "Búsquedas generales y manuales", active: true },
+  { id: "alerts", name: "Alertas", description: "Alertas y notificaciones", active: true },
+  { id: "takedowns", name: "Takedowns", description: "Apertura y gestión inicial", active: true },
+  { id: "follow-up", name: "Seguimiento", description: "Tickets abiertos y cambios", active: true },
+  { id: "providers", name: "Proveedores", description: "Respuestas de proveedores", active: true },
+  { id: "redirects", name: "Redirects", description: "Redirects nuevos y reactivados", active: true },
+  { id: "specialized", name: "Monitoreos especializados", description: "Ads, blogs y búsquedas focalizadas", active: true },
+  { id: "qa", name: "Calidad", description: "QA exclusivo", active: true },
+];
+
+export const initialCriticalFronts: CriticalFront[] = [
+  { id: "searches", name: "Búsquedas", description: "Cobertura de búsquedas", active: true, order: 1 },
+  { id: "alerts", name: "Alertas", description: "Cobertura de alertas", active: true, order: 2 },
+  { id: "takedowns", name: "Takedowns", description: "Nuevos casos", active: true, order: 3 },
+  { id: "follow-up", name: "Seguimiento", description: "Casos en curso", active: true, order: 4 },
+];
+
+const idsByFamily = (family: string, shift: ShiftName) =>
+  initialTasks.filter((item) => item.family === family && (!item.shifts || item.shifts.includes(shift))).map((item) => item.id);
+
+function group(id: number, name: string, taskIds: number[]): TemplateGroup {
+  return { id, name, taskIds: [...new Set(taskIds)] };
+}
+
+function templateGroups(shift: ShiftName, count: number): TemplateGroup[] {
+  const searches = idsByFamily("searches", shift);
+  const alerts = idsByFamily("alerts", shift).filter((id) => id !== 8);
+  const takedowns = idsByFamily("takedowns", shift);
+  const followUp = idsByFamily("follow-up", shift);
+  const providers = idsByFamily("providers", shift);
+  const redirects = idsByFamily("redirects", shift);
+  const specialized = idsByFamily("specialized", shift).filter((id) => id !== 31);
+  const threat3 = initialTasks.some((item) => item.id === 8 && (!item.shifts || item.shifts.includes(shift))) ? [8] : [];
+  const qa = [26];
+  const focused = count >= 9 ? [31] : [];
+  const all = [...searches, ...alerts, ...takedowns, ...followUp, ...providers, ...redirects, ...specialized, ...threat3, ...focused];
+  if (count <= 1) return [group(1, "Operación completa", all)];
+  if (count === 2) return [group(1, "Búsquedas y alertas", [...searches, ...alerts, ...specialized, ...threat3]), group(2, "Takedowns y seguimiento", [...takedowns, ...followUp, ...providers, ...redirects])];
+  if (count === 3) return [group(1, "Búsquedas", searches), group(2, "Alertas", [...alerts, ...specialized, ...threat3]), group(3, "Takedowns y seguimiento", [...takedowns, ...followUp, ...providers, ...redirects])];
+  if (count === 4) return [group(1, "Búsquedas", searches), group(2, "Alertas", [...alerts, ...specialized, ...threat3]), group(3, "Nuevos takedowns", takedowns), group(4, "Seguimiento", [...followUp, ...providers, ...redirects])];
+  const base = [group(1, "Búsquedas", searches), group(2, "Alertas", [...alerts, ...specialized]), group(3, "Nuevos takedowns", takedowns), group(4, "Seguimiento", [...followUp, ...providers, ...redirects])];
+  if (count >= 5) base.push(group(5, "Tickets QA", qa));
+  if (count >= 6) {
+    base[0] = group(1, "Búsquedas generales", searches.slice(0, Math.ceil(searches.length / 2)));
+    base.splice(1, 0, group(2, "Búsquedas especializadas", [...searches.slice(Math.ceil(searches.length / 2)), ...specialized]));
+    base[2] = group(3, "Alertas", alerts);
+    for (let index = 2; index < base.length; index += 1) base[index].id = index + 1;
+  }
+  if (count >= 7) base.splice(base.length - 1, 0, group(base.length, "Check Threat Alerts 3", threat3));
+  if (count >= 8) {
+    const followIndex = base.findIndex((item) => item.name === "Seguimiento");
+    if (followIndex >= 0) base[followIndex] = group(base[followIndex].id, "Seguimiento de tickets", followUp);
+    base.splice(base.length - 1, 0, group(base.length, "Redirects y proveedores", [...redirects, ...providers]));
+  }
+  if (count >= 9) base.splice(base.length - 1, 0, group(base.length, "Búsquedas focalizadas", focused));
+  while (base.length < count) base.splice(base.length - 1, 0, group(base.length, `Grupo especializado ${base.length}`, []));
+  return base.slice(0, count).map((item, index) => ({ ...item, id: index + 1 }));
+}
+
+export const initialTemplates: DistributionTemplate[] = SHIFT_NAMES.flatMap((shift) =>
+  Array.from({ length: 9 }, (_, index) => index + 1).map((analystCount) => ({
+    id: `${shift}-${analystCount}`,
+    name: `${shift} · ${analystCount} analista${analystCount === 1 ? "" : "s"}`,
+    shift,
+    analystCount,
+    groups: templateGroups(shift, analystCount),
+    active: true,
+  })),
+);
+
 export const initialState: AppState = {
   version: 1,
-  analysts: [],
-  taskFamilies: [
-    { id: "new-takedowns", name: "New Takedowns", description: "Variantes del frente de nuevos takedowns.", active: true },
-    { id: "provider-replies", name: "Provider Replies", description: "Variantes de respuestas de proveedores.", active: true },
-    { id: "manual-searches", name: "Búsquedas manuales", description: "Variantes de búsquedas manuales.", active: true },
-    { id: "in-progress", name: "In Progress", description: "Variantes de tickets en gestión.", active: true },
-    { id: "threat-alerts", name: "Threat Alerts", description: "Variantes de alertas de amenazas.", active: true },
-    { id: "quick-alerts", name: "Quick Alerts", description: "Variantes de Quick Alerts.", active: true },
+  analysts: [
+    { id: 1, name: "Laura Gómez", initials: "LG", schedule: "2:00 p. m.–10:00 p. m.", status: "Disponible", active: true },
+    { id: 2, name: "Carlos Ruiz", initials: "CR", schedule: "2:00 p. m.–10:00 p. m.", status: "Disponible", active: true },
+    { id: 3, name: "Andrés Torres", initials: "AT", schedule: "2:00 p. m.–10:00 p. m.", status: "Disponible", active: true },
+    { id: 4, name: "Mariana León", initials: "ML", schedule: "2:00 p. m.–10:00 p. m.", status: "Disponible", active: true },
+    { id: 5, name: "Sofía Vargas", initials: "SV", schedule: "2:00 p. m.–10:00 p. m.", status: "Disponible", active: true },
+    { id: 6, name: "Gabriel Lopes", initials: "GL", schedule: "2:00 p. m.–10:00 p. m.", status: "Disponible", active: true },
   ],
-  criticalFronts: [
-    { id: "news", name: "News / New Takedowns", description: "Responsable principal de nuevos casos.", active: true, order: 1 },
-    { id: "searches", name: "Búsquedas", description: "Responsable principal de búsquedas manuales.", active: true, order: 2 },
-    { id: "in-progress", name: "In Progress", description: "Responsable principal de casos en gestión.", active: true, order: 3 },
-  ],
-  tasks: [
-    task(
-      1,
-      "Check Threat Alerts 1",
-      3,
-      "Alertas",
-      "Revisar y gestionar las alertas principales de amenazas.",
-      { family: "threat-alerts" },
-    ),
-    task(
-      2,
-      "Ads Alerts / Blog Monitoring Alerts",
-      2,
-      "Alertas",
-      "Revisar alertas provenientes de anuncios y monitoreo de blogs.",
-    ),
-    task(
-      3,
-      "Brand and Apps Manual Searches",
-      4,
-      "Búsquedas",
-      "Realizar búsquedas manuales de marca y aplicaciones.",
-      {
-        family: "manual-searches",
-        criticalLane: "searches",
-        defaultAssignmentNote: "Búsquedas para los clientes del día.",
-      },
-    ),
-    task(
-      4,
-      "Miarroba and Dnpedia",
-      2,
-      "Búsquedas",
-      "Revisar fuentes Miarroba y DNPedia dentro del alcance del turno.",
-    ),
-    task(
-      5,
-      "Check Twitter Notifications",
-      2,
-      "Notificaciones",
-      "Validar las notificaciones recibidas desde Twitter/X.",
-    ),
-    task(
-      6,
-      "Check Monitoring Closed Tickets",
-      2,
-      "Seguimiento",
-      "Revisar tickets cerrados detectados por el monitoreo.",
-    ),
-    task(
-      7,
-      "Update Open Tickets - Phishing",
-      3,
-      "Seguimiento",
-      "Actualizar los tickets abiertos clasificados como phishing.",
-    ),
-    task(
-      8,
-      "Update Open Tickets - Other and Disclosure",
-      3,
-      "Seguimiento",
-      "Actualizar tickets abiertos de Other y Disclosure.",
-    ),
-    task(
-      9,
-      "Update Following Tickets Files - JP BR REDIRECTS",
-      2,
-      "Seguimiento",
-      "Actualizar archivos de seguimiento asociados a JP/BR Redirects.",
-    ),
-    task(
-      10,
-      "Update Open Tickets - DBI",
-      3,
-      "Seguimiento",
-      "Actualizar tickets abiertos del frente DBI.",
-    ),
-    task(
-      11,
-      "In Progress Tickets Check 1",
-      5,
-      "Takedown",
-      "Revisar los tickets que continúan en gestión.",
-      {
-        family: "in-progress",
-        criticalLane: "in-progress",
-        defaultAssignmentNote: "Frente principal de tickets In Progress.",
-      },
-    ),
-    task(
-      12,
-      "Check Quick Alerts 1",
-      2,
-      "Alertas",
-      "Revisar el frente principal de Quick Alerts.",
-      { family: "quick-alerts" },
-    ),
-    task(
-      13,
-      "New Takedowns 1",
-      5,
-      "Takedown",
-      "Gestionar el frente principal de nuevos casos de takedown.",
-      {
-        family: "new-takedowns",
-        criticalLane: "news",
-        defaultAssignmentNote: "Frente principal de nuevos takedowns.",
-      },
-    ),
-    task(
-      14,
-      "Activision",
-      3,
-      "Cliente",
-      "Atender las responsabilidades operativas específicas de Activision.",
-    ),
-    task(
-      15,
-      "Check Providers Replies 1",
-      3,
-      "Proveedores",
-      "Revisar y gestionar respuestas recibidas de proveedores.",
-      {
-        family: "provider-replies",
-        defaultAssignmentNote: "Respuestas de Cloudflare.",
-      },
-    ),
-    task(
-      16,
-      "Check Tickets Changes Notifications",
-      2,
-      "Notificaciones",
-      "Revisar notificaciones de cambios en tickets.",
-    ),
-    task(
-      17,
-      "Update Open Tickets - Mobile",
-      3,
-      "Seguimiento",
-      "Actualizar tickets abiertos relacionados con Mobile.",
-    ),
-    task(
-      18,
-      "New Takedowns 2",
-      5,
-      "Takedown",
-      "Segundo frente de nuevos casos, habilitado cuando el turno tiene capacidad suficiente.",
-      {
-        family: "new-takedowns",
-        minAnalysts: 4,
-        defaultAssignmentNote: "Segundo frente de nuevos takedowns.",
-      },
-    ),
-    task(
-      19,
-      "In Progress Tickets Check 2",
-      5,
-      "Takedown",
-      "Segundo frente de revisión de tickets en gestión.",
-      {
-        family: "in-progress",
-        minAnalysts: 4,
-        defaultAssignmentNote: "Segundo frente de tickets In Progress.",
-      },
-    ),
-    task(
-      20,
-      "Check Quick Alerts 2",
-      2,
-      "Alertas",
-      "Segundo frente de Quick Alerts.",
-      {
-        family: "quick-alerts",
-        minAnalysts: 4,
-        defaultAssignmentNote: "Cobertura complementaria de Quick Alerts.",
-      },
-    ),
-    task(
-      21,
-      "Check Threat Alerts 2",
-      3,
-      "Alertas",
-      "Segundo frente de Threat Alerts.",
-      {
-        family: "threat-alerts",
-        minAnalysts: 5,
-        defaultAssignmentNote: "Cobertura complementaria de Threat Alerts.",
-      },
-    ),
-    task(
-      22,
-      "Check Providers Replies 2",
-      3,
-      "Proveedores",
-      "Segundo frente de respuestas de proveedores.",
-      {
-        family: "provider-replies",
-        minAnalysts: 5,
-        defaultAssignmentNote:
-          "Respuestas de todos los proveedores excepto Cloudflare.",
-      },
-    ),
-    task(
-      23,
-      "Phishing/Redirects Manual Searches",
-      4,
-      "Búsquedas",
-      "Segundo frente de búsquedas manuales enfocado en phishing y redirects.",
-      {
-        family: "manual-searches",
-        minAnalysts: 5,
-        defaultAssignmentNote:
-          "Búsquedas generales, no limitadas a los clientes del día.",
-      },
-    ),
-    task(
-      24,
-      "Brand Manual Searches",
-      3,
-      "Búsquedas",
-      "Realizar búsquedas manuales adicionales enfocadas en marca.",
-      {
-        minAnalysts: 5,
-        defaultAssignmentNote: "Refuerzo de búsquedas manuales de marca.",
-      },
-    ),
-    task(
-      25,
-      "App Searches",
-      3,
-      "Búsquedas",
-      "Realizar búsquedas manuales adicionales enfocadas en aplicaciones.",
-      {
-        minAnalysts: 5,
-        defaultAssignmentNote: "Refuerzo de búsquedas de aplicaciones.",
-      },
-    ),
-    task(
-      26,
-      "New Takedowns 3",
-      5,
-      "Takedown",
-      "Tercer frente de nuevos takedowns para turnos con alta capacidad.",
-      {
-        family: "new-takedowns",
-        minAnalysts: 6,
-        defaultAssignmentNote: "Tercer frente de nuevos takedowns.",
-      },
-    ),
-    task(
-      27,
-      "QA / Quality Assurance",
-      4,
-      "Calidad",
-      "Ejecutar la revisión QA definida para el turno.",
-      {
-        qa: true,
-        exclusive: true,
-        defaultAssignmentNote: "QA general del turno.",
-      },
-    ),
-  ],
+  tasks: initialTasks,
+  taskFamilies: initialTaskFamilies,
+  criticalFronts: initialCriticalFronts,
+  templates: initialTemplates,
   groups: [],
   scheduled: [],
   activeScheduleId: null,
 };
 
 export function initialsFor(name: string) {
-  return name
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toLocaleUpperCase("es") ?? "")
-    .join("");
+  return name.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toLocaleUpperCase("es") ?? "").join("");
 }
 
-export function isExclusiveTask(value: Task) {
-  return Boolean(value.qa || value.exclusive);
+export function isExclusiveTask(task: Task) { return Boolean(task.qa || task.exclusive); }
+export function groupWeight(group: HydratedGroup) { return group.tasks.length; }
+
+export function assignmentNote(group: HydratedGroup, task: Task) {
+  return group.taskNotes?.[String(task.id)] ?? task.defaultAssignmentNote ?? "";
 }
 
-export function isTaskActiveForCount(
-  value: Task,
-  operationalAnalysts: number,
-) {
-  return (
-    value.active &&
-    !value.qa &&
-    Math.max(1, value.minAnalysts || 3) <= operationalAnalysts
-  );
-}
-
-export function activeTasksForAnalystCount(
-  tasks: Task[],
-  selectedAnalysts: number,
-  qaEnabled: boolean,
-) {
-  const operationalAnalysts = selectedAnalysts - (qaEnabled ? 1 : 0);
-  const regular = tasks.filter((value) =>
-    isTaskActiveForCount(value, operationalAnalysts),
-  );
-  const qa = qaEnabled
-    ? tasks.find((value) => value.qa && value.active)
-    : undefined;
-  return qa ? [...regular, qa] : regular;
-}
-
-export function groupWeight(group: HydratedGroup) {
-  return group.tasks.reduce((sum, value) => sum + value.weight, 0);
-}
-
-export function assignmentNote(group: HydratedGroup, value: Task) {
-  return group.taskNotes[value.id] ?? value.defaultAssignmentNote ?? "";
-}
-
-export function hydrateGroups(
-  groups: GroupRecord[],
-  tasks: Task[],
-): HydratedGroup[] {
-  return groups.map((group) => {
-    const resolvedTasks = group.taskIds
-      .map((taskId) => tasks.find((value) => value.id === taskId))
-      .filter((value): value is Task => Boolean(value))
-      .map((value) => ({ ...value }));
-    return {
-      id: group.id,
-      name: group.name,
-      analystId: group.analystId,
-      tasks: resolvedTasks,
-      taskNotes: Object.fromEntries(
-        resolvedTasks.map((value) => [
-          value.id,
-          group.taskNotes?.[String(value.id)] ??
-            value.defaultAssignmentNote ??
-            "",
-        ]),
-      ),
-    };
-  });
+export function hydrateGroups(groups: GroupRecord[], tasks: Task[]): HydratedGroup[] {
+  return groups.map((item) => ({
+    id: item.id,
+    name: item.name,
+    analystId: item.analystId,
+    taskNotes: { ...(item.taskNotes || {}) },
+    tasks: item.taskIds.map((id) => tasks.find((candidate) => candidate.id === id)).filter((candidate): candidate is Task => Boolean(candidate)).map((candidate) => ({ ...candidate })),
+  }));
 }
 
 export function serializeGroups(groups: HydratedGroup[]): GroupRecord[] {
-  return groups.map((group) => ({
-    id: group.id,
-    name: group.name,
-    analystId: group.analystId,
-    taskIds: group.tasks.map((value) => value.id),
-    taskNotes: Object.fromEntries(
-      group.tasks.map((value) => [
-        String(value.id),
-        assignmentNote(group, value),
-      ]),
-    ),
-  }));
+  return groups.map((item) => ({ id: item.id, name: item.name, analystId: item.analystId, taskIds: item.tasks.map((taskItem) => taskItem.id), taskNotes: { ...(item.taskNotes || {}) } }));
 }
 
 export function cloneHydratedGroups(groups: HydratedGroup[]) {
-  return groups.map((group) => ({
-    ...group,
-    tasks: group.tasks.map((value) => ({ ...value })),
-    taskNotes: { ...group.taskNotes },
-  }));
+  return groups.map((item) => ({ ...item, taskNotes: { ...(item.taskNotes || {}) }, tasks: item.tasks.map((taskItem) => ({ ...taskItem })) }));
 }
 
 export function nextCalendarDate(dateValue: string) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateValue);
   if (!match) return dateValue;
-  const date = new Date(
-    Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])),
-  );
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
   date.setUTCDate(date.getUTCDate() + 1);
   return date.toISOString().slice(0, 10);
 }
 
-export function buildScheduleLocalRange(
-  dateValue: string,
-  startTime: string,
-  endTime: string,
-) {
-  const validDate = /^\d{4}-\d{2}-\d{2}$/.test(dateValue);
-  const validStart = /^\d{2}:\d{2}$/.test(startTime);
-  const validEnd = /^\d{2}:\d{2}$/.test(endTime);
-  if (!validDate || !validStart || !validEnd) {
-    return { startsAt: "", endsAt: "" };
-  }
+export function buildScheduleLocalRange(dateValue: string, startTime: string, endTime: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue) || !/^\d{2}:\d{2}$/.test(startTime) || !/^\d{2}:\d{2}$/.test(endTime)) return { startsAt: "", endsAt: "" };
   const endDate = endTime <= startTime ? nextCalendarDate(dateValue) : dateValue;
-  return {
-    startsAt: `${dateValue}T${startTime}`,
-    endsAt: `${endDate}T${endTime}`,
-  };
+  return { startsAt: `${dateValue}T${startTime}`, endsAt: `${endDate}T${endTime}` };
 }
 
-function capacityFor(analystId: number, analysts: Analyst[]) {
-  const analyst = analysts.find((value) => value.id === analystId);
-  return analyst?.status === "Horario parcial" ? 0.65 : 1;
-}
-
-function candidateScore(group: HydratedGroup, analysts: Analyst[]) {
-  return groupWeight(group) / capacityFor(group.analystId, analysts);
-}
-
-function taskFamily(value: Task) {
-  return value.family?.trim().toLocaleLowerCase("es") || "";
-}
-
-function chooseGroup(
-  groups: HydratedGroup[],
-  value: Task,
-  analysts: Analyst[],
-) {
-  const family = taskFamily(value);
-  const withoutSameFamily = family
-    ? groups.filter(
-        (group) =>
-          !group.tasks.some(
-            (assigned) => taskFamily(assigned) === family,
-          ),
-      )
-    : groups;
-  const candidates = withoutSameFamily.length ? withoutSameFamily : groups;
-  return [...candidates].sort((a, b) => {
-    const scoreDifference =
-      candidateScore(a, analysts) - candidateScore(b, analysts);
-    if (scoreDifference !== 0) return scoreDifference;
-    if (a.tasks.length !== b.tasks.length) {
-      return a.tasks.length - b.tasks.length;
-    }
-    return a.id - b.id;
-  })[0];
+export function activeTasksForAnalystCount(tasks: Task[], analystCount: number, qaEnabled: boolean, shift?: string) {
+  return tasks.filter((item) => item.active && item.minAnalysts <= analystCount && (qaEnabled || !item.qa) && (!item.shifts || !shift || item.shifts.includes(shift as ShiftName)));
 }
 
 export function generateDraftGroups(
@@ -589,391 +311,223 @@ export function generateDraftGroups(
   tasks: Task[],
   qaEnabled: boolean,
   analysts: Analyst[] = [],
+  templates: DistributionTemplate[] = initialTemplates,
+  shift: ShiftName = "Turno 2–10",
+  rotation: RotationContext = {},
 ): { groups: GroupRecord[]; error?: string } {
-  const uniqueAnalystIds = Array.from(new Set(analystIds));
-  if (uniqueAnalystIds.length !== analystIds.length) {
-    return {
-      groups: [],
-      error: "Un analista no puede aparecer dos veces en la distribución.",
-    };
-  }
-
-  const qaTask = tasks.find((value) => value.qa && value.active);
-  if (qaEnabled && !qaTask) {
-    return {
-      groups: [],
-      error:
-        "QA está habilitada, pero no existe una tarea QA activa en el catálogo.",
-    };
-  }
-
-  const operationalIds = qaEnabled
-    ? uniqueAnalystIds.slice(0, -1)
-    : uniqueAnalystIds;
-  const qaAnalystId = qaEnabled ? uniqueAnalystIds.at(-1) : undefined;
-  if (operationalIds.length < 3) {
-    return {
-      groups: [],
-      error: `Se requieren al menos ${
-        qaEnabled ? 4 : 3
-      } analistas seleccionados${
-        qaEnabled
-          ? " para separar News, Búsquedas, In Progress y QA"
-          : " para separar News, Búsquedas e In Progress"
-      }.`,
-    };
-  }
-
-  const regularTasks = tasks.filter((value) =>
-    isTaskActiveForCount(value, operationalIds.length),
+  if (!analystIds.length) return { groups: [], error: "Selecciona al menos un analista." };
+  const template = templates.find((item) => item.active && item.shift === shift && item.analystCount === analystIds.length);
+  if (!template) return { groups: [], error: `No existe una plantilla activa para ${shift} con ${analystIds.length} analistas.` };
+  const applicable = new Set(activeTasksForAnalystCount(tasks, analystIds.length, qaEnabled, shift).map((item) => item.id));
+  const effectiveTemplateGroups = template.groups.map((group) => ({
+    ...group,
+    taskIds: group.taskIds.filter((id) => applicable.has(id)),
+  }));
+  const rotatedAnalystIds = fairAnalystOrder(
+    analystIds,
+    effectiveTemplateGroups,
+    tasks,
+    analysts,
+    shift,
+    rotation,
   );
-  if (operationalIds.length > regularTasks.length) {
-    return {
-      groups: [],
-      error:
-        "Hay más analistas operativos que tareas aplicables. Activa más tareas o reduce el equipo seleccionado.",
-    };
+  const groups = effectiveTemplateGroups.map((templateGroup, index) => ({
+    id: index + 1,
+    name: templateGroup.name,
+    analystId: rotatedAnalystIds[index],
+    taskIds: templateGroup.taskIds.filter((id) => applicable.has(id)),
+    taskNotes: {},
+  }));
+  if (groups.some((item) => !item.analystId)) return { groups: [], error: "La plantilla tiene más grupos que analistas seleccionados." };
+  const assigned = new Set(groups.flatMap((item) => item.taskIds));
+  const missing = [...applicable].filter((id) => !assigned.has(id));
+  for (const taskId of missing) {
+    const taskItem = tasks.find((item) => item.id === taskId);
+    const target = taskItem?.qa ? groups.find((item) => item.taskIds.length === 0) : groups.filter((item) => !item.taskIds.some((id) => tasks.find((taskCandidate) => taskCandidate.id === id)?.qa)).sort((a, b) => a.taskIds.length - b.taskIds.length)[0];
+    target?.taskIds.push(taskId);
   }
-
-  const hydrated: HydratedGroup[] = operationalIds.map(
-    (analystId, index) => ({
-      id: index + 1,
-      name: `Grupo ${index + 1}`,
-      analystId,
-      tasks: [],
-      taskNotes: {},
-    }),
-  );
-
-  const criticalOrder: CriticalLane[] = Array.from(
-    new Set(regularTasks.map((value) => value.criticalLane).filter(Boolean) as string[]),
-  );
-  const assigned = new Set<number>();
-  criticalOrder.forEach((lane, index) => {
-    const criticalTask = regularTasks
-      .filter((value) => value.criticalLane === lane)
-      .sort(
-        (a, b) =>
-          a.minAnalysts - b.minAnalysts || a.id - b.id,
-      )[0];
-    if (!criticalTask || !hydrated[index]) return;
-    hydrated[index].tasks.push({ ...criticalTask });
-    hydrated[index].taskNotes[criticalTask.id] =
-      criticalTask.defaultAssignmentNote;
-    assigned.add(criticalTask.id);
-  });
-
-  const remaining = regularTasks
-    .filter((value) => !assigned.has(value.id))
-    .sort(
-      (a, b) =>
-        b.weight - a.weight ||
-        a.minAnalysts - b.minAnalysts ||
-        a.id - b.id,
-    );
-
-  for (const value of remaining) {
-    const target = chooseGroup(hydrated, value, analysts);
-    if (!target) continue;
-    target.tasks.push({ ...value });
-    target.taskNotes[value.id] = value.defaultAssignmentNote;
-  }
-
-  if (qaEnabled && qaTask && qaAnalystId) {
-    hydrated.push({
-      id: hydrated.length + 1,
-      name: `Grupo ${hydrated.length + 1}`,
-      analystId: qaAnalystId,
-      tasks: [{ ...qaTask }],
-      taskNotes: { [qaTask.id]: qaTask.defaultAssignmentNote },
-    });
-  }
-
-  return { groups: serializeGroups(hydrated) };
+  return { groups };
 }
 
-export function reconcileAfterAnalystRemoval(
-  currentGroups: HydratedGroup[],
-  removedGroupId: number,
-  tasks: Task[],
-  qaEnabled: boolean,
-  analysts: Analyst[] = [],
-): ReconcileResult {
-  const remainingIds = currentGroups
-    .filter((group) => group.id !== removedGroupId)
-    .map((group) => group.analystId);
-  const generated = generateDraftGroups(
-    remainingIds,
-    tasks,
-    qaEnabled,
-    analysts,
-  );
-  if (generated.error) {
-    return {
-      groups: currentGroups,
-      removedTasks: [],
-      error: generated.error,
-    };
-  }
+function normalizedRotationKey(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLocaleLowerCase("es");
+}
 
-  const existingNotes = new Map<number, string>();
-  for (const group of currentGroups) {
-    for (const value of group.tasks) {
-      existingNotes.set(value.id, assignmentNote(group, value));
+type RotationAssignment = {
+  effectiveAt: number;
+  analystId: number;
+  groupKey: string;
+  taskIds: Set<number>;
+};
+
+function rotationAssignments(
+  analystIds: number[],
+  analysts: Analyst[],
+  tasks: Task[],
+  shift: ShiftName,
+  context: RotationContext,
+  targetTime: number,
+) {
+  const selected = new Set(analystIds);
+  const analystByName = new Map(
+    analysts.map((analyst) => [normalizedRotationKey(analyst.name), analyst.id]),
+  );
+  const taskByName = new Map(
+    tasks.map((item) => [normalizedRotationKey(item.name), item.id]),
+  );
+  const assignments = new Map<string, RotationAssignment>();
+  for (const record of context.history || []) {
+    if (record.shift !== shift) continue;
+    const effectiveAt = Date.parse(record.effectiveAt);
+    if (!Number.isFinite(effectiveAt) || effectiveAt >= targetTime) continue;
+    const analystId = record.analystId ?? analystByName.get(normalizedRotationKey(record.analystName || ""));
+    if (!analystId || !selected.has(analystId)) continue;
+    const groupKey = normalizedRotationKey(record.groupName);
+    const key = `${record.effectiveAt}|${analystId}|${groupKey}`;
+    const assignment = assignments.get(key) || { effectiveAt, analystId, groupKey, taskIds: new Set<number>() };
+    const taskId = record.taskId ?? taskByName.get(normalizedRotationKey(record.taskName || ""));
+    if (taskId) assignment.taskIds.add(taskId);
+    assignments.set(key, assignment);
+  }
+  for (const schedule of context.scheduled || []) {
+    const effectiveAt = Date.parse(schedule.startsAt);
+    if (
+      schedule.shift !== shift ||
+      !Number.isFinite(effectiveAt) ||
+      effectiveAt >= targetTime ||
+      !["Programada", "Requiere revisión"].includes(schedule.status)
+    ) continue;
+    for (const group of schedule.groups) {
+      if (!selected.has(group.analystId)) continue;
+      assignments.set(`schedule:${schedule.id}:${group.id}`, {
+        effectiveAt,
+        analystId: group.analystId,
+        groupKey: normalizedRotationKey(group.name),
+        taskIds: new Set(group.taskIds),
+      });
     }
   }
-
-  const reconciled = hydrateGroups(generated.groups, tasks).map((group) => ({
-    ...group,
-    taskNotes: Object.fromEntries(
-      group.tasks.map((value) => [
-        value.id,
-        existingNotes.get(value.id) ??
-          value.defaultAssignmentNote,
-      ]),
-    ),
-  }));
-  const remainingTaskIds = new Set(
-    reconciled.flatMap((group) =>
-      group.tasks.map((value) => value.id),
-    ),
-  );
-  const removedTasks = currentGroups
-    .flatMap((group) => group.tasks)
-    .filter(
-      (value, index, all) =>
-        !remainingTaskIds.has(value.id) &&
-        all.findIndex((candidate) => candidate.id === value.id) === index,
-    );
-  return { groups: reconciled, removedTasks };
+  return [...assignments.values()];
 }
 
-function duplicated(values: number[]) {
-  return values.filter(
-    (value, index) => values.indexOf(value) !== index,
-  );
+/**
+ * Asigna globalmente los grupos a los analistas con menor exposición reciente.
+ * La optimización por máscara evita que una mejora individual perjudique la
+ * equidad del resto del equipo y es suficientemente pequeña para 1–9 personas.
+ */
+export function fairAnalystOrder(
+  analystIds: number[],
+  templateGroups: TemplateGroup[],
+  tasks: Task[],
+  analysts: Analyst[],
+  shift: ShiftName,
+  context: RotationContext = {},
+) {
+  if (analystIds.length < 2 || templateGroups.length !== analystIds.length) return [...analystIds];
+  const parsedTarget = Date.parse(context.effectiveAt || "");
+  const targetTime = Number.isFinite(parsedTarget) ? parsedTarget : Date.now();
+  const weekStart = targetTime - 7 * 24 * 60 * 60 * 1000;
+  const monthStart = targetTime - 31 * 24 * 60 * 60 * 1000;
+  const assignments = rotationAssignments(analystIds, analysts, tasks, shift, context, targetTime);
+  const latestByAnalyst = new Map<number, RotationAssignment>();
+  for (const assignment of assignments) {
+    const latest = latestByAnalyst.get(assignment.analystId);
+    if (!latest || assignment.effectiveAt > latest.effectiveAt) latestByAnalyst.set(assignment.analystId, assignment);
+  }
+  const cost = templateGroups.map((group) => {
+    const groupKey = normalizedRotationKey(group.name);
+    const groupTasks = new Set(group.taskIds);
+    return analystIds.map((analystId) => {
+      let value = 0;
+      for (const assignment of assignments) {
+        if (assignment.analystId !== analystId || assignment.effectiveAt < monthStart) continue;
+        const weekly = assignment.effectiveAt >= weekStart;
+        if (assignment.groupKey === groupKey) value += weekly ? 10_000 : 1_000;
+        let sharedTasks = 0;
+        for (const taskId of assignment.taskIds) if (groupTasks.has(taskId)) sharedTasks += 1;
+        value += sharedTasks * (weekly ? 400 : 40);
+      }
+      if (latestByAnalyst.get(analystId)?.groupKey === groupKey) value += 20_000;
+      return value;
+    });
+  });
+  type Candidate = { cost: number; order: number[] };
+  let states = new Map<number, Candidate>([[0, { cost: 0, order: [] }]]);
+  for (let groupIndex = 0; groupIndex < templateGroups.length; groupIndex += 1) {
+    const next = new Map<number, Candidate>();
+    for (const [mask, candidate] of states) {
+      for (let analystIndex = 0; analystIndex < analystIds.length; analystIndex += 1) {
+        const bit = 1 << analystIndex;
+        if (mask & bit) continue;
+        const nextMask = mask | bit;
+        const proposal = {
+          cost: candidate.cost + cost[groupIndex][analystIndex],
+          order: [...candidate.order, analystIds[analystIndex]],
+        };
+        const current = next.get(nextMask);
+        if (!current || proposal.cost < current.cost) next.set(nextMask, proposal);
+      }
+    }
+    states = next;
+  }
+  return states.get((1 << analystIds.length) - 1)?.order || [...analystIds];
 }
+
+export function reconcileAfterAnalystRemoval(groups: HydratedGroup[], removedGroupId: number, tasks: Task[], qaEnabled: boolean, analysts: Analyst[], templates: DistributionTemplate[] = initialTemplates, shift: ShiftName = "Turno 2–10", rotation: RotationContext = {}) {
+  const remaining = groups.filter((item) => item.id !== removedGroupId).map((item) => item.analystId);
+  const generated = generateDraftGroups(remaining, tasks, qaEnabled, analysts, templates, shift, rotation);
+  return { groups: generated.groups.length ? hydrateGroups(generated.groups, tasks) : groups, removedTasks: [] as Task[], error: generated.error };
+}
+
+function duplicated(values: number[]) { return values.filter((value, index) => values.indexOf(value) !== index); }
 
 export function validateState(state: AppState): ValidationResult {
   const errors: string[] = [];
-  if (
-    !state ||
-    !Array.isArray(state.analysts) ||
-    !Array.isArray(state.tasks) ||
-    !Array.isArray(state.groups) ||
-    !Array.isArray(state.scheduled)
-  ) {
-    return {
-      valid: false,
-      errors: ["La estructura general del estado no es válida."],
-    };
-  }
-
-  const analystIds = state.analysts.map((analyst) => analyst.id);
-  const taskIds = state.tasks.map((value) => value.id);
-  if (duplicated(analystIds).length) {
-    errors.push("Hay identificadores de analistas duplicados.");
-  }
-  if (duplicated(taskIds).length) {
-    errors.push("Hay identificadores de tareas duplicados.");
-  }
-
+  if (!state || !Array.isArray(state.analysts) || !Array.isArray(state.tasks) || !Array.isArray(state.groups) || !Array.isArray(state.scheduled)) return { valid: false, errors: ["La estructura general del estado no es válida."] };
+  const analystIds = state.analysts.map((item) => item.id);
+  const taskIds = state.tasks.map((item) => item.id);
+  if (duplicated(analystIds).length) errors.push("Hay identificadores de analistas duplicados.");
+  if (duplicated(taskIds).length) errors.push("Hay identificadores de tareas duplicados.");
   const validateGroups = (groups: GroupRecord[], label: string) => {
-    const groupIds = groups.map((group) => group.id);
-    const owners = groups.map((group) => group.analystId);
-    const assignedTasks = groups.flatMap((group) => group.taskIds);
-    if (duplicated(groupIds).length) {
-      errors.push(`${label}: hay identificadores de grupo duplicados.`);
-    }
-    if (duplicated(owners).length) {
-      errors.push(
-        `${label}: un analista no puede ser responsable de dos grupos.`,
-      );
-    }
-    if (duplicated(assignedTasks).length) {
-      errors.push(`${label}: una tarea no puede aparecer en dos grupos.`);
-    }
-    for (const group of groups) {
-      if (!analystIds.includes(group.analystId)) {
-        errors.push(
-          `${label}: el grupo ${group.name} tiene un analista inexistente.`,
-        );
-      }
-      const resolvedTasks = group.taskIds.map((id) =>
-        state.tasks.find((value) => value.id === id),
-      );
-      if (resolvedTasks.some((value) => !value)) {
-        errors.push(
-          `${label}: el grupo ${group.name} contiene una tarea inexistente.`,
-        );
-      }
-      const existingTasks = resolvedTasks.filter(
-        (value): value is Task => Boolean(value),
-      );
-      const exclusive = existingTasks.find(isExclusiveTask);
-      if (exclusive && group.taskIds.length > 1) {
-        errors.push(
-          `${label}: ${exclusive.name} debe permanecer sola en ${group.name}.`,
-        );
-      }
-      const criticalLanes = existingTasks
-        .map((value) => value.criticalLane)
-        .filter((value): value is CriticalLane => Boolean(value));
-      if (new Set(criticalLanes).size > 1) {
-        errors.push(
-          `${label}: News, Búsquedas e In Progress deben tener responsables distintos.`,
-        );
-      }
+    if (duplicated(groups.map((item) => item.id)).length) errors.push(`${label}: hay identificadores de grupo duplicados.`);
+    if (duplicated(groups.map((item) => item.analystId)).length) errors.push(`${label}: un analista no puede ser responsable de dos grupos.`);
+    if (duplicated(groups.flatMap((item) => item.taskIds)).length) errors.push(`${label}: una tarea no puede aparecer en dos grupos.`);
+    for (const item of groups) {
+      if (!analystIds.includes(item.analystId)) errors.push(`${label}: ${item.name} tiene un analista inexistente.`);
+      if (item.taskIds.some((id) => !taskIds.includes(id))) errors.push(`${label}: ${item.name} contiene una tarea inexistente.`);
+      const resolved = item.taskIds.map((id) => state.tasks.find((candidate) => candidate.id === id)).filter((candidate): candidate is Task => Boolean(candidate));
+      if (resolved.some(isExclusiveTask) && resolved.length > 1) errors.push(`${label}: ${resolved.find(isExclusiveTask)?.name} debe permanecer sola.`);
     }
   };
-
   validateGroups(state.groups, "Distribución vigente");
-  for (const schedule of state.scheduled) {
-    validateGroups(
-      schedule.groups,
-      `Programación ${schedule.name}`,
-    );
-    if (
-      !Number.isFinite(Date.parse(schedule.startsAt)) ||
-      !Number.isFinite(Date.parse(schedule.endsAt))
-    ) {
-      errors.push(
-        `Programación ${schedule.name}: el horario no es válido.`,
-      );
-    } else if (
-      Date.parse(schedule.endsAt) <= Date.parse(schedule.startsAt)
-    ) {
-      errors.push(
-        `Programación ${schedule.name}: la hora final debe ser posterior a la inicial.`,
-      );
-    }
-  }
-
-  for (const value of state.tasks) {
-    if (!value.name.trim()) {
-      errors.push("Todas las tareas deben tener nombre.");
-    }
-    if (
-      !Number.isInteger(value.weight) ||
-      value.weight < 1 ||
-      value.weight > 10
-    ) {
-      errors.push(
-        `El peso de ${value.name || "una tarea"} debe estar entre 1 y 10.`,
-      );
-    }
-    if (
-      !Number.isInteger(value.minAnalysts) ||
-      value.minAnalysts < 1 ||
-      value.minAnalysts > 10
-    ) {
-      errors.push(
-        `El mínimo de ${
-          value.name || "una tarea"
-        } debe estar entre 1 y 10.`,
-      );
-    }
-  }
-  for (const analyst of state.analysts) {
-    if (!analyst.name.trim()) {
-      errors.push("Todos los analistas deben tener nombre.");
-    }
-  }
+  state.scheduled.forEach((item) => {
+    validateGroups(item.groups, `Programación ${item.name}`);
+    if (!Number.isFinite(Date.parse(item.startsAt)) || !Number.isFinite(Date.parse(item.endsAt)) || Date.parse(item.endsAt) <= Date.parse(item.startsAt)) errors.push(`Programación ${item.name}: el horario no es válido.`);
+  });
+  (state.templates || []).forEach((item) => {
+    if (item.groups.length !== item.analystCount) errors.push(`Plantilla ${item.name}: debe tener ${item.analystCount} grupos.`);
+    if (duplicated(item.groups.flatMap((templateGroup) => templateGroup.taskIds)).length) errors.push(`Plantilla ${item.name}: una tarea no puede estar en varios grupos.`);
+  });
   return { valid: errors.length === 0, errors };
 }
 
-export function schedulesOverlap(
-  schedules: ScheduledDistribution[],
-  startsAt: string,
-  endsAt: string,
-  ignoredId?: number,
-) {
-  const start = Date.parse(startsAt);
-  const end = Date.parse(endsAt);
-  return schedules.some((schedule) => {
-    if (
-      schedule.id === ignoredId ||
-      !["Programada", "Requiere revisión"].includes(schedule.status)
-    ) {
-      return false;
-    }
-    return (
-      start < Date.parse(schedule.endsAt) &&
-      end > Date.parse(schedule.startsAt)
-    );
-  });
+export function schedulesOverlap(schedules: ScheduledDistribution[], startsAt: string, endsAt: string, ignoredId?: number) {
+  const start = Date.parse(startsAt); const end = Date.parse(endsAt);
+  return schedules.some((item) => item.id !== ignoredId && ["Programada", "Requiere revisión"].includes(item.status) && start < Date.parse(item.endsAt) && end > Date.parse(item.startsAt));
 }
 
-export function resolveScheduledDistributions(
-  currentState: AppState,
-  now = Date.now(),
-): ScheduleResolution {
-  const state = structuredClone(currentState);
-  let changed = false;
-
-  for (const schedule of state.scheduled) {
-    if (
-      (schedule.status === "Programada" ||
-        schedule.status === "Activada") &&
-      Date.parse(schedule.endsAt) <= now
-    ) {
-      schedule.status = "Expirada";
-      changed = true;
-    }
-  }
-
-  const due = state.scheduled
-    .filter(
-      (schedule) =>
-        schedule.status === "Programada" &&
-        Date.parse(schedule.startsAt) <= now &&
-        Date.parse(schedule.endsAt) > now,
-    )
-    .sort(
-      (a, b) => Date.parse(b.startsAt) - Date.parse(a.startsAt),
-    )[0];
-
-  if (!due || state.activeScheduleId === due.id) {
-    return { state, changed, activated: null };
-  }
-
-  state.groups = due.groups.map((group) => ({
-    ...group,
-    taskIds: [...group.taskIds],
-    taskNotes: { ...(group.taskNotes || {}) },
-  }));
-  state.activeScheduleId = due.id;
-  due.status = "Activada";
+export function resolveScheduledDistributions(currentState: AppState, now = Date.now()): ScheduleResolution {
+  const state = structuredClone(currentState); let changed = false;
+  for (const item of state.scheduled) if (["Programada", "Activada"].includes(item.status) && Date.parse(item.endsAt) <= now) { item.status = "Expirada"; changed = true; }
+  const due = state.scheduled.filter((item) => item.status === "Programada" && Date.parse(item.startsAt) <= now && Date.parse(item.endsAt) > now).sort((a, b) => Date.parse(b.startsAt) - Date.parse(a.startsAt))[0];
+  if (!due || state.activeScheduleId === due.id) return { state, changed, activated: null };
+  state.groups = due.groups.map((item) => ({ ...item, taskIds: [...item.taskIds], taskNotes: { ...(item.taskNotes || {}) } }));
+  state.activeScheduleId = due.id; due.status = "Activada";
   return { state, changed: true, activated: due };
 }
 
-export function nextId(items: Array<{ id: number }>) {
-  return Math.max(0, ...items.map((item) => item.id)) + 1;
-}
-
-export function resolveAnalystRegistration(
-  analysts: Analyst[],
-  requestedId: unknown,
-) {
-  const hasRequestedId =
-    requestedId !== null &&
-    requestedId !== undefined &&
-    Number(requestedId) > 0;
-  if (!hasRequestedId) {
-    return {
-      analystId: nextId(analysts),
-      existingAnalyst: undefined,
-      invalidRequestedId: false,
-    };
-  }
-  const analystId = Number(requestedId);
-  const existingAnalyst = Number.isInteger(analystId)
-    ? analysts.find((analyst) => analyst.id === analystId)
-    : undefined;
-  return {
-    analystId,
-    existingAnalyst,
-    invalidRequestedId:
-      !Number.isInteger(analystId) || !existingAnalyst,
-  };
-}
+export function nextId(items: Array<{ id: number }>) { return Math.max(0, ...items.map((item) => item.id)) + 1; }

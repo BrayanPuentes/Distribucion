@@ -1,78 +1,59 @@
 # Validación funcional
 
-## Alcance agregado en versión 7
-
-Se añadieron pruebas para autorización de líder, confirmación destructiva, eliminación selectiva del histórico mediante `distribution_id`, conservación de auditoría, instantáneas publicadas y catálogos parametrizables. La migración `0004` crea `published_distributions` y agrega el vínculo al histórico sin alterar filas anteriores.
-
 Fecha de revisión: 25 de julio de 2026.
 
-## Resultado verificable
+## Resultado
 
-La versión supera TypeScript, lint, la compilación de producción, la validación
-del artefacto y 23 pruebas automatizadas. La vista previa local quedó
-ejecutándose, pero el navegador remoto de validación no pudo conectarse a ella;
-por eso este reporte no presenta recorridos visuales como si hubieran sido
-completados.
+La compilación de producción, la validación del artefacto de Sites y las pruebas
+automatizadas finalizaron correctamente. También se ejecutaron los flujos
+principales en el navegador contra la base local.
 
-| Área | Prueba automatizada o estática | Resultado |
+| Área | Prueba realizada | Resultado |
 |---|---|---|
-| Perfiles de capacidad | Generación completa y balanceada con 3–10 analistas operativos | Correcto |
-| Plantillas del Excel | Umbrales evaluados con QA ocupando una persona del turno | Correcto |
-| Frentes críticos | News, Búsquedas e In Progress quedan con responsables distintos | Correcto |
-| QA | Requiere al menos cuatro personas seleccionadas y queda sola | Correcto |
-| Provider Replies | Dos responsables y notas Cloudflare / demás proveedores | Correcto |
-| Búsquedas manuales | Dos responsables y particularidades clientes del día / búsquedas generales | Correcto |
-| Reducción del equipo | Al pasar de cuatro a tres operativos desaparece `New Takedowns 2` | Correcto |
-| Balance | Diferencia de peso acotada en todos los perfiles de 3–10 | Correcto |
-| Particularidades | Serialización, clonación y activación futura conservan las notas por asignación | Correcto |
-| Programación | Franjas del mismo día, nocturnas y detección de solapamientos | Correcto |
-| Validación de estado | Bloqueo de responsables duplicados, tareas duplicadas y frentes críticos mezclados | Correcto |
-| Autenticación | Normalización de usuarios, PBKDF2 y cookie HttpOnly | Correcto |
-| Base de datos | Migración generada para descripción y particularidad históricas | Correcto |
-| Producción | Worker ESM y manifiesto de alojamiento presentes | Correcto |
-| Interfaz | TypeScript y lint sin errores ni advertencias | Correcto |
+| Configuración inicial | Creación del primer líder sin credenciales predeterminadas | Correcto |
+| Inicio de sesión | Acceso con credenciales reales como líder y analista | Correcto |
+| Contraseña | Cambio propio, cierre de sesiones anteriores, rechazo de la clave anterior y acceso con la nueva | Correcto |
+| Usuarios | Alta de analista vinculado, alta de otro líder y eliminación controlada | Correcto |
+| Permisos | Navegación y operaciones de administración ocultas al analista; autorización aplicada en el servidor | Correcto |
+| Vista del analista | Inicio con su grupo y Distribuciones con los seis grupos del equipo | Correcto |
+| Histórico por alcance | Accesos rápidos a “Mi histórico” e “Histórico grupal”, además de filtros detallados | Correcto |
+| Generador | Selección de seis analistas y creación de borrador | Correcto |
+| Reglas exclusivas | News, Búsquedas e In Progress separados; QA opcional | Correcto |
+| Edición | Movimiento de tareas y retiro/reincorporación de un analista | Correcto |
+| Previsualización | Modal opaco, legible y con resumen de cambios | Correcto |
+| Publicación | Nueva versión e histórico por tarea | Correcto |
+| Programación | Fecha explícita desde el primer paso, conservación durante edición y previsualización, guardado del 26/07 y eliminación posterior | Correcto |
+| Eliminación | Confirmación y eliminación de programación no vigente | Correcto |
+| Persistencia | Recarga del navegador conservando datos | Correcto |
+| Tareas | Alta y eliminación persistentes | Correcto |
+| Analistas | Alta y eliminación persistentes | Correcto |
+| Histórico | Búsqueda por tarea con resultado filtrado | Correcto |
+| Logs | Filtros, actualización y registro de advertencia de validación | Correcto |
+| Logs de acceso | Alta de usuario, inicios correctos y fallidos, cambio de contraseña, cierre de sesión y eliminación | Correcto |
+| Consola | Carga limpia sin errores propios de la aplicación | Correcto |
 
-## Casos cubiertos por las 17 pruebas
+## Pruebas automatizadas
 
-- Una prueba del artefacto renderizado y su metadato de desarrollo.
-- Cuatro pruebas de autenticación y seguridad.
-- Trece pruebas de dominio de distribución, registro unificado, programación,
-  balance, umbrales, particularidades, retiro de analistas y activación
-  automática.
+- Generación completa sin analistas ni tareas duplicados.
+- Exclusividad de QA, News, Búsquedas e In Progress.
+- Rechazo cuando no hay suficientes analistas.
+- Detección de solapamientos entre programaciones.
+- Construcción correcta de franjas del mismo día y turnos nocturnos que
+  finalizan al día siguiente.
+- Validación de responsables duplicados y tareas exclusivas compartidas.
+- Iniciales para nuevos analistas.
+- Activación automática de una programación vigente y expiración de bloques
+  anteriores.
+- Renderizado del artefacto y presencia del Worker y manifiesto requeridos.
+- Normalización y validación de nombres de usuario.
+- Derivación y verificación de contraseñas sin conservar texto visible.
+- Atributos HttpOnly, SameSite y Secure de la cookie según el entorno.
 
-## Reglas verificadas
+En total se ejecutan 12 pruebas automatizadas, además de TypeScript, lint,
+compilación y validación interactiva en navegador.
 
-- El catálogo inicial sigue los frentes observados en el Excel.
-- Los umbrales se calculan con analistas operativos; QA no aumenta la capacidad
-  disponible para duplicar tareas.
-- Las tareas de una misma familia intentan quedar con personas diferentes.
-- Retirar una persona regenera el perfil; las variantes que dejan de aplicar
-  se eliminan y se informa cuáles fueron.
-- La particularidad se guarda dentro de la distribución, no solo en el
-  catálogo.
-- Al publicar, el histórico copia nombre, descripción y particularidad; queda
-  congelado para consultas de QA.
-- Un analista sin una cuenta activa no es elegible, y el servidor rechaza una
-  distribución que intente incluirlo.
-- Cuenta y perfil operativo se crean, actualizan y eliminan juntos.
+## Nota operativa
 
-## Comandos de control
-
-```bash
-npm run lint
-npm test
-```
-
-## Validación manual recomendada en Windows
-
-Después de descomprimir en una carpeta nueva:
-
-1. Crea el primer líder.
-2. En **Equipo**, registra cinco analistas con contraseña.
-3. Genera una distribución con esos cinco analistas y sin QA.
-4. Confirma que existan dos Provider Replies con particularidades distintas.
-5. Edita una particularidad, publica y búscala en **Histórico**.
-6. Redistribuye, retira dos personas hasta quedar en tres operativos y confirma
-   que `New Takedowns 2` desaparezca.
-7. Cierra sesión con el líder e ingresa como uno de los analistas para verificar
-   su grupo en Inicio y el histórico individual/grupal.
+Las distribuciones que ya estuvieron vigentes se conservan para auditoría. El
+botón de eliminación se ofrece únicamente en programaciones que todavía no
+entraron en vigencia.

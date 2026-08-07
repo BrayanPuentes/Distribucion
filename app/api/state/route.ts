@@ -2,10 +2,14 @@ import {
   type Analyst,
   type AppState,
   type ScheduledDistribution,
+  type DistributionTemplate,
+  type ShiftName,
   type TaskFamily,
   type CriticalFront,
   type Task,
   initialState,
+  initialTasks,
+  initialTemplates,
   isExclusiveTask,
   resolveScheduledDistributions,
   validateState,
@@ -34,7 +38,7 @@ async function ensureDatabase() {
   const db = database();
   await db.batch([
     db.prepare("CREATE TABLE IF NOT EXISTS app_state (id INTEGER PRIMARY KEY, payload TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
-    db.prepare("CREATE TABLE IF NOT EXISTS history_events (id INTEGER PRIMARY KEY AUTOINCREMENT, distribution_id INTEGER, effective_at TEXT NOT NULL, valid_until TEXT, shift TEXT NOT NULL, task TEXT NOT NULL, task_description TEXT NOT NULL DEFAULT '', assignment_note TEXT NOT NULL DEFAULT '', analyst TEXT NOT NULL, group_name TEXT NOT NULL, event TEXT NOT NULL, version INTEGER NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS history_events (id INTEGER PRIMARY KEY AUTOINCREMENT, distribution_id INTEGER, effective_at TEXT NOT NULL, valid_until TEXT, shift TEXT NOT NULL, task_id INTEGER, task TEXT NOT NULL, task_description TEXT NOT NULL DEFAULT '', assignment_note TEXT NOT NULL DEFAULT '', analyst_id INTEGER, analyst TEXT NOT NULL, group_id INTEGER, group_name TEXT NOT NULL, event TEXT NOT NULL, version INTEGER NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE INDEX IF NOT EXISTS history_distribution_idx ON history_events (distribution_id)"),
     db.prepare("CREATE TABLE IF NOT EXISTS published_distributions (id INTEGER PRIMARY KEY AUTOINCREMENT, schedule_id INTEGER, name TEXT NOT NULL, effective_at TEXT NOT NULL, valid_until TEXT, shift TEXT NOT NULL, snapshot TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', is_current INTEGER NOT NULL DEFAULT 0, archived_at TEXT, archived_by TEXT, archive_reason TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"),
     db.prepare("CREATE INDEX IF NOT EXISTS published_status_idx ON published_distributions (status, effective_at)"),
@@ -72,6 +76,15 @@ async function ensureDatabase() {
   }
   if (!existingColumns.has("valid_until")) {
     await db.prepare("ALTER TABLE history_events ADD COLUMN valid_until TEXT").run();
+  }
+  if (!existingColumns.has("task_id")) {
+    await db.prepare("ALTER TABLE history_events ADD COLUMN task_id INTEGER").run();
+  }
+  if (!existingColumns.has("analyst_id")) {
+    await db.prepare("ALTER TABLE history_events ADD COLUMN analyst_id INTEGER").run();
+  }
+  if (!existingColumns.has("group_id")) {
+    await db.prepare("ALTER TABLE history_events ADD COLUMN group_id INTEGER").run();
   }
   const publicationColumns = await db
     .prepare("PRAGMA table_info(published_distributions)")
@@ -161,12 +174,65 @@ function normalizeTasks(value: unknown): Task[] {
       ),
       family: task.family ? String(task.family) : undefined,
       criticalLane: task.criticalLane ? String(task.criticalLane) : undefined,
+      shifts: Array.isArray(task.shifts) ? task.shifts.map(String) as ShiftName[] : undefined,
       qa: Boolean(task.qa),
       exclusive: Boolean(task.exclusive),
     };
     if (isExclusiveTask(normalized)) normalized.exclusive = true;
     return normalized;
   });
+}
+
+const RETIRED_TASKS = new Set(["check communications", "search for vulnerabilities", "app searches", "brand and apps manual searches", "activision"]);
+const TASK_RENAMES = new Map([
+  ["ads alerts", "Check teams notifications for ProactivityTA Ads"],
+  ["brand searches", "Brand Abuse Protection Manual Searches"],
+  ["check quick alerts", "Check Threat Alerts 3"],
+  ["miarroba and dnpedia", "Phish y redirect to phish Manual Searches"],
+  ["check monitoring closed tickets", "CheckTakedownAlerts"],
+  ["check tickets changes notifcations", "CheckTakedownAlerts"],
+  ["update following tickets files - jp br redirects", "GFC Tracking"],
+  ["new takedowns & inprogress (night)", "New Takedowns & Inprogress"],
+]);
+
+function migrateTaskCatalog(tasks: Task[]) {
+  const migrated: Task[] = [];
+  const seen = new Set<string>();
+  for (const item of tasks) {
+    const normalized = item.name.trim().toLocaleLowerCase("es");
+    if (RETIRED_TASKS.has(normalized)) continue;
+    const next = TASK_RENAMES.has(normalized) ? { ...item, name: TASK_RENAMES.get(normalized)! } : item;
+    const key = next.name.trim().toLocaleLowerCase("es");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    migrated.push(next);
+  }
+  let nextId = Math.max(0, ...migrated.map((item) => item.id)) + 1;
+  for (const desired of initialTasks) {
+    const existing = migrated.find((item) => item.name.trim().toLocaleLowerCase("es") === desired.name.toLocaleLowerCase("es"));
+    if (existing) Object.assign(existing, { category: desired.category, minAnalysts: desired.minAnalysts, family: desired.family, shifts: desired.shifts, qa: desired.qa, exclusive: desired.exclusive });
+    else migrated.push({ ...desired, id: nextId++ });
+  }
+  return migrated;
+}
+
+function normalizeTemplates(value: unknown, tasks: Task[]): DistributionTemplate[] {
+  const usingInitial = !(Array.isArray(value) && value.length);
+  const source = usingInitial ? initialTemplates : value as DistributionTemplate[];
+  const desiredIdToCurrentId = new Map(initialTasks.map((item) => [item.id, tasks.find((candidate) => candidate.name === item.name)?.id]));
+  const validIds = new Set(tasks.map((item) => item.id));
+  return source.map((item) => item as Partial<DistributionTemplate>).filter((item) => item.shift && Number.isInteger(item.analystCount) && Array.isArray(item.groups)).map((item) => ({
+    id: String(item.id || `${item.shift}-${item.analystCount}`),
+    name: String(item.name || `${item.shift} · ${item.analystCount} analistas`),
+    shift: String(item.shift) as ShiftName,
+    analystCount: Number(item.analystCount),
+    active: item.active !== false,
+    groups: (item.groups || []).map((templateGroup, index) => ({
+      id: Number(templateGroup.id) || index + 1,
+      name: String(templateGroup.name || `Grupo ${index + 1}`),
+      taskIds: (templateGroup.taskIds || []).map(Number).map((id) => usingInitial ? desiredIdToCurrentId.get(id) : validIds.has(id) ? id : undefined).filter((id): id is number => Number.isInteger(id)),
+    })),
+  }));
 }
 
 function normalizeTaskFamilies(value: unknown): TaskFamily[] {
@@ -234,12 +300,14 @@ function normalizeSchedules(value: unknown): ScheduledDistribution[] {
 
 function normalizeState(value: unknown): AppState {
   const source = (value && typeof value === "object" ? value : {}) as Partial<AppState>;
+  const tasks = migrateTaskCatalog(normalizeTasks(source.tasks));
   return {
     version: Number(source.version) || 1,
     analysts: normalizeAnalysts(source.analysts),
-    tasks: normalizeTasks(source.tasks),
+    tasks,
     taskFamilies: normalizeTaskFamilies(source.taskFamilies),
     criticalFronts: normalizeCriticalFronts(source.criticalFronts),
+    templates: normalizeTemplates(source.templates, tasks),
     groups: normalizeGroups(source.groups),
     scheduled: normalizeSchedules(source.scheduled),
     activeScheduleId: Number.isInteger(source.activeScheduleId) ? Number(source.activeScheduleId) : null,
@@ -307,18 +375,21 @@ function historyStatements(
     return group.taskIds.map((taskId) => {
       const task = state.tasks.find((item) => item.id === taskId);
       return db
-        .prepare("INSERT INTO history_events (distribution_id, effective_at, valid_until, shift, task, task_description, assignment_note, analyst, group_name, event, version, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .prepare("INSERT INTO history_events (distribution_id, effective_at, valid_until, shift, task_id, task, task_description, assignment_note, analyst_id, analyst, group_id, group_name, event, version, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(
           distributionId,
           effectiveAt,
           validUntil,
           shift,
+          taskId,
           task?.name || `Tarea ${taskId}`,
           task?.description || "",
           group.taskNotes?.[String(taskId)] ||
             task?.defaultAssignmentNote ||
             "",
+          group.analystId,
           analyst?.name || "Sin responsable",
+          group.id,
           group.name,
           event,
           version,
@@ -441,7 +512,6 @@ async function activateDueSchedule(current: Awaited<ReturnType<typeof readState>
       "ACTIVACION_AUTOMATICA",
       `La activación automática fue detenida: ${validation.errors.join(" ")}`,
       "Sistema",
-      null,
       "",
       { scheduleId: due?.id ?? null },
     );
@@ -502,8 +572,8 @@ export async function GET(request: Request) {
     const current = await activateDueSchedule(await readState());
     const db = database();
     const [history, published, audit, logs] = await Promise.all([
-      db.prepare("SELECT id, distribution_id, effective_at, valid_until, shift, task, task_description, assignment_note, analyst, group_name, event, version, created_by FROM history_events ORDER BY effective_at DESC, id DESC LIMIT 5000").all(),
-      db.prepare("SELECT id, schedule_id, name, effective_at, valid_until, shift, status, is_current, archived_at, archived_by, archive_reason, created_by, created_at FROM published_distributions ORDER BY effective_at DESC, id DESC").all(),
+      db.prepare("SELECT id, distribution_id, effective_at, valid_until, shift, task_id, task, task_description, assignment_note, analyst_id, analyst, group_id, group_name, event, version, created_by FROM history_events ORDER BY effective_at DESC, id DESC LIMIT 5000").all(),
+      db.prepare("SELECT id, schedule_id, name, effective_at, valid_until, shift, snapshot, status, is_current, archived_at, archived_by, archive_reason, created_by, created_at FROM published_distributions ORDER BY effective_at DESC, id DESC").all(),
       user.role === "leader"
         ? db.prepare("SELECT id, action, detail, actor, created_at FROM audit_events ORDER BY id DESC LIMIT 1000").all()
         : Promise.resolve({ results: [] }),

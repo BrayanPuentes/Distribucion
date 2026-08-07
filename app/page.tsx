@@ -57,6 +57,9 @@ import {
   type Task,
   type TaskFamily,
   type CriticalFront,
+  type DistributionTemplate,
+  type ShiftName,
+  SHIFT_NAMES,
   activeTasksForAnalystCount,
   assignmentNote,
   buildScheduleLocalRange,
@@ -78,6 +81,7 @@ type Page =
   | "Programación"
   | "Histórico"
   | "Tareas"
+  | "Plantillas"
   | "Equipo"
   | "Logs";
 
@@ -92,9 +96,12 @@ type AuthSession = {
 
 type PublishedDistribution = {
   id: number;
+  schedule_id: number | null;
   name: string;
   effective_at: string;
+  valid_until: string | null;
   shift: string;
+  snapshot: string;
   status: "active" | "archived";
   is_current: number;
   archived_at: string | null;
@@ -115,13 +122,17 @@ type UserRecord = AuthSession & {
 
 type HistoryRecord = {
   id: number;
+  distribution_id: number | null;
   effective_at: string;
   valid_until: string | null;
   shift: string;
+  task_id: number | null;
   task: string;
   task_description: string;
   assignment_note: string;
+  analyst_id: number | null;
   analyst: string;
+  group_id: number | null;
   group_name: string;
   event: string;
   version: number;
@@ -203,7 +214,8 @@ const pageMeta: Record<Page, { title: string; description: string }> = {
   Distribuciones: { title: "Distribución vigente", description: "Consulta y ajusta la asignación operativa actual" },
   Programación: { title: "Programación", description: "Prepara distribuciones futuras y controla su activación" },
   Histórico: { title: "Histórico", description: "Trazabilidad por tarea, grupo, analista y franja" },
-  Tareas: { title: "Administración de tareas", description: "Catálogo, pesos y reglas de exclusividad" },
+  Tareas: { title: "Administración de tareas", description: "Catálogo, grupos y reglas operativas" },
+  Plantillas: { title: "Plantillas por turno", description: "Grupos fijos según el turno y la cantidad de analistas" },
   Equipo: { title: "Equipo y accesos", description: "Personas, usuarios, contraseñas y disponibilidad operativa" },
   Logs: { title: "Logs del sistema", description: "Monitorea acciones, advertencias y errores técnicos" },
 };
@@ -386,9 +398,10 @@ export default function HomePage() {
   const [plannedSchedule, setPlannedSchedule] = useState<ScheduleFormValue | null>(null);
   const [selectedAnalysts, setSelectedAnalysts] = useState<number[]>([]);
   const [qaEnabled, setQaEnabled] = useState(false);
+  const [draftShift, setDraftShift] = useState<ShiftName>("Turno 2–10");
   const [draftGroups, setDraftGroups] = useState<HydratedGroup[]>([]);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [changeReason, setChangeReason] = useState("Redistribución por carga");
+  const [changeReason, setChangeReason] = useState("Reasignación operativa");
   const [draggedTask, setDraggedTask] = useState<{ taskId: number; fromGroupId: number } | null>(null);
   const [scheduleForm, setScheduleForm] = useState<ScheduleFormValue | null>(null);
   const [scheduleGroups, setScheduleGroups] = useState<HydratedGroup[]>([]);
@@ -734,8 +747,9 @@ export default function HomePage() {
     );
     setScheduleIntent(future);
     setPlannedSchedule(future ? scheduleDefaults() : null);
+    setDraftShift("Turno 2–10");
     setPreviewOpen(false);
-    setChangeReason(mode === "new" ? (future ? "Distribución futura" : "Nueva distribución") : "Redistribución por carga");
+    setChangeReason(mode === "new" ? (future ? "Distribución futura" : "Nueva distribución") : "Reasignación operativa");
     setQaEnabled(hasQa);
     if (mode === "new") {
       const currentOwners = groups
@@ -771,11 +785,29 @@ export default function HomePage() {
         return;
       }
     }
+    const effectiveShift = scheduleIntent && plannedSchedule && SHIFT_NAMES.includes(plannedSchedule.shift as ShiftName)
+      ? plannedSchedule.shift as ShiftName
+      : draftShift;
     const result = generateDraftGroups(
       selectedAnalysts,
       tasks,
       qaEnabled,
       analysts,
+      appState.templates,
+      effectiveShift,
+      {
+        effectiveAt: scheduleIntent && plannedSchedule ? plannedSchedule.startsAt : new Date().toISOString(),
+        history: historyRecords.map((record) => ({
+          effectiveAt: record.effective_at,
+          shift: record.shift,
+          analystId: record.analyst_id,
+          analystName: record.analyst,
+          groupName: record.group_name,
+          taskId: record.task_id,
+          taskName: record.task,
+        })),
+        scheduled: scheduled.filter((item) => item.id !== plannedSchedule?.id),
+      },
     );
     if (result.error) {
       setNotice({ type: "warning", message: result.error });
@@ -788,6 +820,7 @@ export default function HomePage() {
     setDraftGroups(hydrateGroups(result.groups, tasks));
     setSetupOpen(false);
     setEditing("new");
+    setNotice({ type: "info", message: `Rotación equilibrada para ${effectiveShift}: se priorizaron los grupos y tareas menos frecuentes de cada analista durante los últimos 7 y 30 días.` });
     recordClientLog("INFO", "GENERADOR", "GENERAR_BORRADOR", "Borrador generado correctamente.", {
       analysts: selectedAnalysts.length,
       qaEnabled,
@@ -872,6 +905,21 @@ export default function HomePage() {
         tasks,
         qaEnabled,
         analysts,
+        appState.templates,
+        draftShift,
+        {
+          effectiveAt: plannedSchedule?.startsAt || new Date().toISOString(),
+          history: historyRecords.map((record) => ({
+            effectiveAt: record.effective_at,
+            shift: record.shift,
+            analystId: record.analyst_id,
+            analystName: record.analyst,
+            groupName: record.group_name,
+            taskId: record.task_id,
+            taskName: record.task,
+          })),
+          scheduled: scheduled.filter((item) => item.id !== plannedSchedule?.id),
+        },
       );
       if (result.error) {
         const message = result.error;
@@ -917,6 +965,21 @@ export default function HomePage() {
         tasks,
         qaEnabled,
         analysts,
+        appState.templates,
+        draftShift,
+        {
+          effectiveAt: plannedSchedule?.startsAt || new Date().toISOString(),
+          history: historyRecords.map((record) => ({
+            effectiveAt: record.effective_at,
+            shift: record.shift,
+            analystId: record.analyst_id,
+            analystName: record.analyst,
+            groupName: record.group_name,
+            taskId: record.task_id,
+            taskName: record.task,
+          })),
+          scheduled: scheduled.filter((item) => item.id !== plannedSchedule?.id),
+        },
       );
       if (generated.error) {
         setNotice({ type: "warning", message: generated.error });
@@ -936,7 +999,7 @@ export default function HomePage() {
           group.tasks.map((task) => [
             task.id,
             existingNotes.get(task.id) ??
-              task.defaultAssignmentNote,
+              task.defaultAssignmentNote ?? "",
           ]),
         ),
       }));
@@ -1020,6 +1083,7 @@ export default function HomePage() {
         detail: changeReason,
         module: "DISTRIBUCION",
         publish: true,
+        shift: draftShift,
       });
       setEditing(null);
       setPreviewOpen(false);
@@ -1112,15 +1176,45 @@ export default function HomePage() {
 
   const editSchedule = (schedule: ScheduledDistribution, duplicate = false) => {
     const offset = duplicate ? 24 * 60 * 60 * 1000 : 0;
-    setScheduleGroups(hydrateGroups(schedule.groups, tasks));
-    setScheduleForm({
+    const timing = {
       id: duplicate ? undefined : schedule.id,
       name: duplicate ? `${schedule.name} (copia)` : schedule.name,
       startsAt: dateTimeLocalValue(new Date(Date.parse(schedule.startsAt) + offset)),
       endsAt: dateTimeLocalValue(new Date(Date.parse(schedule.endsAt) + offset)),
       shift: schedule.shift,
       note: schedule.note,
-    });
+    };
+    setDraftGroups(hydrateGroups(schedule.groups, tasks));
+    setPlannedSchedule(timing);
+    setDraftShift(SHIFT_NAMES.includes(schedule.shift as ShiftName) ? schedule.shift as ShiftName : "Turno 2–10");
+    setScheduleIntent(true);
+    setChangeReason(duplicate ? "Copia de distribución" : "Ajuste de programación");
+    setPreviewOpen(false);
+    setEditing("new");
+  };
+
+  const editPublishedDistribution = (publication: PublishedDistribution) => {
+    try {
+      const snapshot = JSON.parse(publication.snapshot || "{}") as Partial<AppState> & { groups?: AppState["groups"] };
+      if (!Array.isArray(snapshot.groups) || !snapshot.groups.length) throw new Error("La publicación no contiene una composición editable.");
+      const scheduleId = publication.schedule_id || nextId(scheduled);
+      const existing = scheduled.find((item) => item.id === scheduleId);
+      editSchedule(existing || {
+        id: scheduleId,
+        name: publication.name,
+        startsAt: publication.effective_at,
+        endsAt: publication.valid_until || new Date(Date.parse(publication.effective_at) + 8 * 60 * 60 * 1000).toISOString(),
+        shift: publication.shift,
+        status: "Expirada",
+        analystCount: snapshot.groups.length,
+        groups: snapshot.groups,
+        createdAt: publication.created_at,
+        createdBy: publication.created_by,
+        note: "Ajuste de distribución histórica",
+      });
+    } catch (error) {
+      setNotice({ type: "warning", message: error instanceof Error ? error.message : "No fue posible abrir esta distribución." });
+    }
   };
 
   const requestDeleteSchedule = (schedule: ScheduledDistribution) => {
@@ -1148,13 +1242,13 @@ export default function HomePage() {
     }
     if (
       !Number.isInteger(form.minAnalysts) ||
-      form.minAnalysts < 3 ||
-      form.minAnalysts > 10
+      form.minAnalysts < 1 ||
+      form.minAnalysts > 9
     ) {
       setNotice({
         type: "warning",
         message:
-          "El umbral debe estar entre 3 y 10 analistas operativos.",
+          "El umbral debe estar entre 1 y 9 analistas operativos.",
       });
       return;
     }
@@ -1177,6 +1271,7 @@ export default function HomePage() {
       minAnalysts: form.minAnalysts,
       family: form.family.trim() || undefined,
       criticalLane: form.criticalLane || undefined,
+      shifts: form.id ? tasks.find((task) => task.id === form.id)?.shifts : undefined,
       qa: form.qa,
       exclusive: form.exclusive || form.qa,
     };
@@ -1282,6 +1377,22 @@ export default function HomePage() {
       ? { ...appState, taskFamilies: appState.taskFamilies.filter((item) => item.id !== id) }
       : { ...appState, criticalFronts: appState.criticalFronts.filter((item) => item.id !== id) };
     await persistState(nextState, { action: "ELIMINAR_PARAMETRO_OPERATIVO", detail: id, module: "CONFIGURACION" });
+  };
+
+  const saveTemplate = async (template: DistributionTemplate) => {
+    const duplicateTasks = template.groups.flatMap((group) => group.taskIds).filter((id, index, values) => values.indexOf(id) !== index);
+    if (template.groups.length !== template.analystCount) {
+      setNotice({ type: "warning", message: `La plantilla debe contener exactamente ${template.analystCount} grupos.` });
+      return;
+    }
+    if (duplicateTasks.length) {
+      setNotice({ type: "warning", message: "Una tarea no puede aparecer en dos grupos de la misma plantilla." });
+      return;
+    }
+    const templates = appState.templates.map((item) => item.id === template.id ? template : item);
+    if (!templates.some((item) => item.id === template.id)) templates.push(template);
+    await persistState({ ...appState, templates }, { action: "GUARDAR_PLANTILLA", detail: template.name, module: "PLANTILLAS" });
+    setNotice({ type: "success", message: "La plantilla quedó guardada. Las distribuciones ya publicadas no cambiaron." });
   };
 
   const runDistributionAction = async (mode: "archive" | "restore" | "delete", item: PublishedDistribution, reason: string, confirmation: string) => {
@@ -1482,6 +1593,7 @@ export default function HomePage() {
     ...(session.role === "leader"
       ? [
           { label: "Tareas" as Page, icon: <ClipboardCheck size={19} /> },
+          { label: "Plantillas" as Page, icon: <SlidersHorizontal size={19} /> },
           { label: "Equipo" as Page, icon: <Users size={19} /> },
           { label: "Logs" as Page, icon: <Bug size={19} /> },
         ]
@@ -1557,7 +1669,7 @@ export default function HomePage() {
             {session.role === "leader" && ["Inicio", "Distribuciones"].includes(activePage) && (
               <div className="heading-actions">
                 <button className="button-secondary" onClick={() => startEditing("redistribute")} disabled={busy}>
-                  <MoveRight size={17} /> Redistribuir carga
+                  <MoveRight size={17} /> Reasignar tareas
                 </button>
                 <button className="button-primary" onClick={() => startEditing("new")} disabled={busy}>
                   <Plus size={17} /> Nueva distribución
@@ -1596,7 +1708,7 @@ export default function HomePage() {
                 <span className={coverage === 100 ? "success-pill" : "warning-pill"}>{coverage}% de cobertura</span>
               </div>
               <DistributionBoard groups={groups} analysts={analysts} compact={false} isAnalyst={false} />
-              <PublishedDistributionsPanel items={publishedDistributions} isLeader={session.role === "leader"} action={(mode, item) => setDistributionAction({ mode, item })} />
+              <PublishedDistributionsPanel items={publishedDistributions} isLeader={session.role === "leader"} edit={editPublishedDistribution} action={(mode, item) => setDistributionAction({ mode, item })} />
             </section>
           )}
           {activePage === "Programación" && (
@@ -1645,11 +1757,11 @@ export default function HomePage() {
                 name: task.name,
                 category: task.category,
                 weight: task.weight,
-                description: task.description,
-                defaultAssignmentNote: task.defaultAssignmentNote,
+                description: task.description || "",
+                defaultAssignmentNote: task.defaultAssignmentNote || "",
                 minAnalysts: task.minAnalysts,
                 family: task.family || "",
-                criticalLane: task.criticalLane || "",
+                criticalLane: (task.criticalLane || "") as TaskFormValue["criticalLane"],
                 exclusive: Boolean(task.exclusive),
                 qa: Boolean(task.qa),
               })}
@@ -1660,6 +1772,9 @@ export default function HomePage() {
               toggleCatalog={(kind, id) => void toggleCatalogItem(kind, id)}
               removeCatalog={(kind, id) => void removeCatalogItem(kind, id)}
             />
+          )}
+          {activePage === "Plantillas" && session.role === "leader" && (
+            <TemplatePage templates={appState.templates} tasks={tasks} save={(template) => void saveTemplate(template)} busy={busy} />
           )}
           {activePage === "Equipo" && session.role === "leader" && (
             <TeamPage
@@ -1757,6 +1872,8 @@ export default function HomePage() {
           setSelected={setSelectedAnalysts}
           qaEnabled={qaEnabled}
           setQaEnabled={setQaEnabled}
+          shift={draftShift}
+          setShift={setDraftShift}
           future={scheduleIntent}
           scheduleValue={plannedSchedule}
           setScheduleValue={setPlannedSchedule}
@@ -2064,10 +2181,9 @@ function Dashboard({
       {!isAnalyst && (
         <section className="load-panel">
           <div className="section-title">
-            <div><h2>Balance de carga</h2><p>Diferencia actual: {maxWeight - minWeight} puntos</p></div>
-            <span className={maxWeight - minWeight > 3 ? "warning-pill" : "success-pill"}>
-              {maxWeight - minWeight > 3 ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}
-              {maxWeight - minWeight > 3 ? "Requiere ajuste" : "Carga equilibrada"}
+            <div><h2>Composición por grupos</h2><p>Las tareas provienen de la plantilla del turno y pueden reasignarse.</p></div>
+            <span className="success-pill">
+              <CheckCircle2 size={15} /> Sin puntajes de carga
             </span>
           </div>
           <div className="load-bars">
@@ -2111,7 +2227,7 @@ function DistributionBoard({
                 <span className="group-number">{group.name}</span>
                 <div className="analyst-name"><span className="avatar">{analyst?.initials || "?"}</span><strong>{analyst?.name || "Analista no disponible"}</strong></div>
               </div>
-              <span className={`weight-badge ${weight >= 9 ? "high" : ""}`}>Peso {weight}</span>
+              <span className="weight-badge">{weight} tareas</span>
             </div>
             <div className="task-list">
               {group.tasks.map((task) => (
@@ -2126,13 +2242,12 @@ function DistributionBoard({
                       </small>
                     )}
                   </span>
-                  <small>{task.weight}</small>
                 </div>
               ))}
             </div>
             <footer>
               <span>{group.tasks.length} {group.tasks.length === 1 ? "tarea" : "tareas"}</span>
-              {weight >= 9 ? <span className="load-high"><BarChart3 size={14} /> Carga alta</span> : <span>Cobertura completa</span>}
+              <span>Cobertura de plantilla</span>
             </footer>
           </article>
         );
@@ -2329,6 +2444,78 @@ function HistoryPage({
   );
 }
 
+function TemplatePage({
+  templates,
+  tasks,
+  save,
+  busy,
+}: {
+  templates: DistributionTemplate[];
+  tasks: Task[];
+  save: (template: DistributionTemplate) => void;
+  busy: boolean;
+}) {
+  const [shift, setShift] = useState<ShiftName>("Turno 2–10");
+  const [analystCount, setAnalystCount] = useState(5);
+  const selected = templates.find((item) => item.shift === shift && item.analystCount === analystCount);
+  const [draft, setDraft] = useState<DistributionTemplate | null>(selected ? structuredClone(selected) : null);
+
+  useEffect(() => {
+    const next = templates.find((item) => item.shift === shift && item.analystCount === analystCount);
+    setDraft(next ? structuredClone(next) : {
+      id: `${shift}-${analystCount}`,
+      name: `${shift} · ${analystCount} analistas`,
+      shift,
+      analystCount,
+      active: true,
+      groups: Array.from({ length: analystCount }, (_, index) => ({ id: index + 1, name: `Grupo ${index + 1}`, taskIds: [] })),
+    });
+  }, [shift, analystCount, templates]);
+
+  if (!draft) return null;
+  const moveTemplateTask = (taskId: number, groupId: number | null) => {
+    setDraft({
+      ...draft,
+      groups: draft.groups.map((group) => ({
+        ...group,
+        taskIds: groupId === group.id
+          ? [...group.taskIds.filter((id) => id !== taskId), taskId]
+          : group.taskIds.filter((id) => id !== taskId),
+      })),
+    });
+  };
+  const relevantTasks = tasks.filter((task) => task.active && (!task.shifts || task.shifts.includes(shift)));
+
+  return (
+    <section className="board-panel template-page">
+      <div className="section-title">
+        <div><h2>Matriz de grupos fijos</h2><p>Configura una composición distinta para cada turno y cantidad de analistas.</p></div>
+        <button className="button-primary" disabled={busy} onClick={() => save(draft)}><Check size={16} /> Guardar plantilla</button>
+      </div>
+      <div className="filter-bar">
+        <select value={shift} onChange={(event) => setShift(event.target.value as ShiftName)}>{SHIFT_NAMES.map((item) => <option key={item}>{item}</option>)}</select>
+        <select value={analystCount} onChange={(event) => setAnalystCount(Number(event.target.value))}>{Array.from({ length: 9 }, (_, index) => index + 1).map((count) => <option key={count} value={count}>{count} analista{count === 1 ? "" : "s"}</option>)}</select>
+        <label className="toggle-label"><input type="checkbox" checked={draft.active} onChange={(event) => setDraft({ ...draft, active: event.target.checked })} /> Plantilla activa</label>
+      </div>
+      <div className="template-grid">
+        {draft.groups.map((group) => (
+          <article className="group-card" key={group.id}>
+            <div className="group-card-head"><input value={group.name} onChange={(event) => setDraft({ ...draft, groups: draft.groups.map((item) => item.id === group.id ? { ...item, name: event.target.value } : item) })} /><span className="neutral-pill">{group.taskIds.length} tareas</span></div>
+            <div className="task-list">
+              {relevantTasks.filter((task) => group.taskIds.includes(task.id)).map((task) => <div className="task-row" key={task.id}><span>{task.name}</span><button className="icon-button danger" onClick={() => moveTemplateTask(task.id, null)} aria-label={`Quitar ${task.name}`}><X size={14} /></button></div>)}
+            </div>
+            <select value="" onChange={(event) => event.target.value && moveTemplateTask(Number(event.target.value), group.id)}>
+              <option value="">Agregar tarea…</option>
+              {relevantTasks.filter((task) => !draft.groups.some((item) => item.taskIds.includes(task.id))).map((task) => <option value={task.id} key={task.id}>{task.name}</option>)}
+            </select>
+          </article>
+        ))}
+      </div>
+      <div className="setup-rule"><Info size={17} /><span>Las modificaciones afectan solo distribuciones nuevas. Las programaciones y los históricos conservan su instantánea.</span></div>
+    </section>
+  );
+}
+
 function TasksPage({
   tasks,
   families,
@@ -2385,7 +2572,7 @@ function TasksPage({
               </div>
             </div>
             <div className="task-metadata">
-              <span>Peso <strong>{task.weight}</strong></span>
+              <span>{task.family ? `Grupo: ${task.family}` : "Sin grupo relacionado"}</span>
               {!task.qa && <span>Desde <strong>{task.minAnalysts}</strong> analistas</span>}
               <span className={assignedTaskIds.has(task.id) ? "success-pill" : "neutral-pill"}>{assignedTaskIds.has(task.id) ? "Asignada" : "Sin asignar"}</span>
             </div>
@@ -2401,14 +2588,14 @@ function TasksPage({
   );
 }
 
-function PublishedDistributionsPanel({ items, isLeader, action }: { items: PublishedDistribution[]; isLeader: boolean; action: (mode: "archive" | "restore" | "delete", item: PublishedDistribution) => void }) {
+function PublishedDistributionsPanel({ items, isLeader, edit, action }: { items: PublishedDistribution[]; isLeader: boolean; edit: (item: PublishedDistribution) => void; action: (mode: "archive" | "restore" | "delete", item: PublishedDistribution) => void }) {
   const [showArchived, setShowArchived] = useState(false);
   const visible = items.filter((item) => showArchived || item.status !== "archived");
   return (
     <section className="published-panel">
       <div className="section-title section-title-compact"><div><h3>Distribuciones publicadas</h3><p>Versiones que llegaron a estar vigentes.</p></div><label className="archive-toggle"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> Mostrar archivadas</label></div>
       <div className="published-list">
-        {visible.map((item) => <article key={item.id} className={item.status === "archived" ? "published-archived" : ""}><div><strong>{item.name}</strong><span>{formatDate(item.effective_at)} · {formatTime(item.effective_at)}–{item.valid_until ? formatTime(item.valid_until) : "sin hora final"} · {item.shift} · por {item.created_by}</span>{item.archive_reason && <small>Archivada por {item.archived_by}: {item.archive_reason}</small>}</div><div className="card-actions">{item.is_current ? <span className="success-pill">Vigente</span> : item.status === "archived" ? <span className="neutral-pill">Archivada</span> : <span className="neutral-pill">Anterior</span>}{isLeader && item.status === "archived" && <button className="icon-text-button" onClick={() => action("restore", item)}><RotateCcw size={15} /> Restaurar</button>}{isLeader && item.status !== "archived" && <button className="icon-text-button" onClick={() => action("archive", item)}><History size={15} /> Archivar</button>}{isLeader && <button className="icon-text-button danger" onClick={() => action("delete", item)}><Trash2 size={15} /> Eliminar</button>}</div></article>)}
+        {visible.map((item) => <article key={item.id} className={item.status === "archived" ? "published-archived" : ""}><div><strong>{item.name}</strong><span>{formatDate(item.effective_at)} · {formatTime(item.effective_at)}–{item.valid_until ? formatTime(item.valid_until) : "sin hora final"} · {item.shift} · por {item.created_by}</span>{item.archive_reason && <small>Archivada por {item.archived_by}: {item.archive_reason}</small>}</div><div className="card-actions">{item.is_current ? <span className="success-pill">Vigente</span> : item.status === "archived" ? <span className="neutral-pill">Archivada</span> : <span className="neutral-pill">Anterior</span>}{isLeader && item.status !== "archived" && <button className="icon-text-button" onClick={() => edit(item)}><Pencil size={15} /> Editar tareas</button>}{isLeader && item.status === "archived" && <button className="icon-text-button" onClick={() => action("restore", item)}><RotateCcw size={15} /> Restaurar</button>}{isLeader && item.status !== "archived" && <button className="icon-text-button" onClick={() => action("archive", item)}><History size={15} /> Archivar</button>}{isLeader && <button className="icon-text-button danger" onClick={() => action("delete", item)}><Trash2 size={15} /> Eliminar</button>}</div></article>)}
         {!visible.length && <p className="empty-history">No hay distribuciones publicadas en este filtro.</p>}
       </div>
     </section>
@@ -2639,6 +2826,8 @@ function DistributionSetup({
   setSelected,
   qaEnabled,
   setQaEnabled,
+  shift,
+  setShift,
   future,
   scheduleValue,
   setScheduleValue,
@@ -2651,6 +2840,8 @@ function DistributionSetup({
   setSelected: (ids: number[]) => void;
   qaEnabled: boolean;
   setQaEnabled: (enabled: boolean) => void;
+  shift: ShiftName;
+  setShift: (shift: ShiftName) => void;
   future: boolean;
   scheduleValue: ScheduleFormValue | null;
   setScheduleValue: (value: ScheduleFormValue | null) => void;
@@ -2659,17 +2850,17 @@ function DistributionSetup({
 }) {
   const minimum = qaEnabled ? 4 : 3;
   const maximum = Math.min(10, analysts.length);
+  const effectiveShift = future && scheduleValue && SHIFT_NAMES.includes(scheduleValue.shift as ShiftName)
+    ? scheduleValue.shift as ShiftName
+    : shift;
   const applicableTasks = activeTasksForAnalystCount(
     tasks,
     selected.length,
     qaEnabled,
+    effectiveShift,
   );
   const toggleAnalyst = (id: number) => {
     setSelected(selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id]);
-  };
-  const qaAnalystId = qaEnabled ? selected.at(-1) : undefined;
-  const selectQaOwner = (id: number) => {
-    setSelected([...selected.filter((item) => item !== id), id]);
   };
   const valid = selected.length >= minimum && selected.length <= maximum;
   return (
@@ -2706,6 +2897,15 @@ function DistributionSetup({
           <span><Users size={22} /></span>
           <div><strong>{selected.length} analistas seleccionados</strong><small>{applicableTasks.length} tareas aplican para esta capacidad · permitido: {minimum}–{maximum}</small></div>
         </div>
+        {!future && (
+          <label className="qa-owner-field">
+            Turno operativo
+            <select value={shift} onChange={(event) => setShift(event.target.value as ShiftName)}>
+              {SHIFT_NAMES.map((item) => <option key={item}>{item}</option>)}
+            </select>
+            <small>Se aplicará la plantilla configurada para este turno y esta cantidad de analistas.</small>
+          </label>
+        )}
         <div className="setup-analysts">
           {analysts.map((analyst) => {
             const checked = selected.includes(analyst.id);
@@ -2721,21 +2921,9 @@ function DistributionSetup({
         <label className="qa-option">
           <input type="checkbox" checked={qaEnabled} onChange={(event) => setQaEnabled(event.target.checked)} />
           <span className="check-visual">{qaEnabled && <Check size={15} />}</span>
-          <span><strong>Habilitar tarea QA</strong><small>QA quedará separada y asignada exclusivamente a un analista.</small></span>
+          <span><strong>Habilitar tarea QA</strong><small>QA quedará separada y el motor elegirá a quien menos la haya realizado en este turno.</small></span>
         </label>
-        {qaEnabled && selected.length > 0 && (
-          <label className="qa-owner-field">
-            Responsable de QA
-            <select value={qaAnalystId} onChange={(event) => selectQaOwner(Number(event.target.value))}>
-              {selected.map((id) => {
-                const analyst = analysts.find((item) => item.id === id);
-                return analyst ? <option key={id} value={id}>{analyst.name}</option> : null;
-              })}
-            </select>
-            <small>Las demás personas determinan las tareas operativas y sus variantes.</small>
-          </label>
-        )}
-        <div className="setup-rule"><ShieldCheck size={17} /><span>News, Búsquedas e In Progress tendrán responsables distintos; QA, si se habilita, permanecerá sola. Las variantes aparecerán o desaparecerán según el número de analistas operativos.</span></div>
+        <div className="setup-rule"><ShieldCheck size={17} /><span>La plantilla define los grupos y el motor de rotación asigna a cada analista lo que menos ha realizado en este turno durante los últimos 7 y 30 días. Las programaciones previas también se tienen en cuenta y podrás hacer ajustes manuales en la previsualización.</span></div>
         {!valid && <div className="inline-warning"><AlertTriangle size={16} /> Selecciona entre {minimum} y {maximum} analistas para generar una distribución completa.</div>}
         <footer>
           <button className="button-secondary" onClick={close}>Cancelar</button>
@@ -2792,7 +2980,7 @@ function EditorDrawer({
         <header>
           <div>
             <p className="eyebrow">{mode === "new" ? "NUEVO BORRADOR" : "BORRADOR DE CAMBIO"}</p>
-            <h2>{mode === "new" ? "Nueva distribución" : "Redistribuir carga"}</h2>
+            <h2>{mode === "new" ? "Nueva distribución" : "Reasignar tareas"}</h2>
             <p>Mueve tareas, ajusta su particularidad o retira un analista para recalcular automáticamente las variantes.</p>
           </div>
           <button className="icon-button" onClick={close} aria-label="Cerrar"><X size={20} /></button>
@@ -2810,7 +2998,7 @@ function EditorDrawer({
           <label>
             Motivo del cambio
             <select value={changeReason} onChange={(event) => setChangeReason(event.target.value)}>
-              <option>Redistribución por carga</option>
+              <option>Reasignación operativa</option>
               <option>Salida de analista</option>
               <option>Refuerzo temporal</option>
               <option>Nueva distribución</option>
@@ -2842,7 +3030,7 @@ function EditorDrawer({
                 }}
               >
                 <div className="editor-group-head">
-                  <div><span>{group.name}</span><strong>Peso {weight}</strong></div>
+                  <div><span>{group.name}</span><strong>{weight} tareas</strong></div>
                   <label>
                     Responsable único
                     <select value={group.analystId} onChange={(event) => reassignGroup(group.id, Number(event.target.value))}>
@@ -2859,7 +3047,7 @@ function EditorDrawer({
                       <GripVertical size={17} />
                       <span className="editor-task-copy">
                         <strong>{task.name}</strong>
-                        <small>Peso {task.weight}{isExclusiveTask(task) ? " · Exclusiva" : ""}{task.minAnalysts > 3 ? ` · desde ${task.minAnalysts} analistas` : ""}</small>
+                        <small>{isExclusiveTask(task) ? "Exclusiva" : task.category}{task.minAnalysts > 1 ? ` · desde ${task.minAnalysts} analistas` : ""}</small>
                         {task.description && <small className="editor-task-description">{task.description}</small>}
                         <label>
                           Particularidad de esta asignación
@@ -2929,7 +3117,7 @@ function PreviewModal({
           <div>
             <p className="eyebrow">PREVISUALIZACIÓN · NO PUBLICADA</p>
             <h2 id="preview-title">Así verá el equipo la distribución</h2>
-            <p>Revisa responsables, tareas y pesos. Después decide si entra en vigencia o queda programada.</p>
+            <p>Revisa responsables y tareas. Después decide si entra en vigencia o queda programada.</p>
           </div>
           <button className="icon-button" onClick={back} aria-label="Cerrar"><X size={20} /></button>
         </header>
@@ -3145,13 +3333,12 @@ function TaskModal({
       <div className="form-grid">
         <label className="field-span-2">Nombre<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Nombre normalizado" autoFocus /></label>
         <label>Categoría<input value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} placeholder="Ej. Alertas" /></label>
-        <label>Peso<input type="number" min={1} max={10} value={form.weight} onChange={(event) => setForm({ ...form, weight: Number(event.target.value) })} /></label>
         <label className="field-span-2">Descripción general del alcance<textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Qué debe cubrir siempre esta tarea" rows={3} /></label>
         <label className="field-span-2">Particularidad sugerida<textarea value={form.defaultAssignmentNote} onChange={(event) => setForm({ ...form, defaultAssignmentNote: event.target.value })} placeholder="Ej. Respuestas de Cloudflare o clientes del día" rows={2} /></label>
         <label>
           Aparece desde
           <select value={form.minAnalysts} onChange={(event) => setForm({ ...form, minAnalysts: Number(event.target.value) })}>
-            {[3, 4, 5, 6, 7, 8, 9, 10].map((count) => <option key={count} value={count}>{count} analistas operativos</option>)}
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((count) => <option key={count} value={count}>{count} analistas operativos</option>)}
           </select>
         </label>
         <label>

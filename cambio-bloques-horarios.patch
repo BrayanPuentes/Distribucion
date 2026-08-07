@@ -1,0 +1,64 @@
+--- a/app/page.tsx
++++ b/app/page.tsx
+@@ -178,7 +178,7 @@
+ const pageMeta: Record<Page, { title: string; description: string }> = {
+   Inicio: { title: "Resumen del turno", description: "Estado operativo y próximos cambios" },
+   Distribuciones: { title: "Distribución vigente", description: "Consulta y ajusta la asignación operativa actual" },
+-  Programación: { title: "Programación", description: "Prepara distribuciones futuras y controla su activación" },
++  Programación: { title: "Programación", description: "Organiza distribuciones por fecha y franja horaria" },
+   Histórico: { title: "Histórico", description: "Trazabilidad por tarea, grupo, analista y franja" },
+   Tareas: { title: "Administración de tareas", description: "Catálogo, pesos y reglas de exclusividad" },
+   Analistas: { title: "Administración de analistas", description: "Disponibilidad y horarios del equipo" },
+@@ -193,7 +193,6 @@
+ 
+ function scheduleDefaults(): ScheduleFormValue {
+   const start = new Date();
+-  start.setDate(start.getDate() + 1);
+   start.setHours(14, 0, 0, 0);
+   const end = new Date(start);
+   end.setHours(22, 0, 0, 0);
+@@ -246,7 +245,6 @@
+ function resolveScheduleTiming(
+   form: ScheduleFormValue,
+   scheduled: ScheduledDistribution[],
+-  now = Date.now(),
+ ) {
+   const startTimestamp = Date.parse(form.startsAt);
+   const endTimestamp = Date.parse(form.endsAt);
+@@ -258,9 +256,6 @@
+   if (endTimestamp <= startTimestamp) {
+     return { error: "La hora final debe ser posterior a la hora inicial." };
+   }
+-  if (!form.id && startTimestamp <= now) {
+-    return { error: "La programación debe iniciar en una fecha futura." };
+-  }
+   if (schedulesOverlap(scheduled, startsAt, endsAt, form.id)) {
+     return { error: "La franja se superpone con otra distribución programada." };
+   }
+@@ -897,7 +892,7 @@
+       setEditing(null);
+       setNotice({
+         type: "success",
+-        message: existing ? "La distribución fue reprogramada." : "La distribución futura quedó programada.",
++        message: existing ? "La distribución fue reprogramada." : "La distribución quedó registrada en la franja indicada.",
+       });
+       setActivePage("Programación");
+     } catch (error) {
+@@ -1990,7 +1985,7 @@
+             ))}
+           </div>
+         ) : (
+-          <EmptyState icon={<CalendarPlus size={25} />} title="No hay distribuciones futuras" detail="Crea una propuesta, previsualízala y selecciona Programar." action={isLeader ? createSchedule : undefined} actionLabel="Nueva programación" />
++          <EmptyState icon={<CalendarPlus size={25} />} title="No hay distribuciones programadas" detail="Crea una propuesta, define su fecha y franja horaria y selecciona Programar." action={isLeader ? createSchedule : undefined} actionLabel="Nueva programación" />
+         )}
+       </div>
+ 
+@@ -2443,7 +2438,7 @@
+             <div className="schedule-setup-heading">
+               <span><CalendarPlus size={20} /></span>
+               <div>
+-                <strong id="schedule-setup-title">¿Para qué fecha quedará programada?</strong>
++                <strong id="schedule-setup-title">¿En qué fecha y franja tendrá vigencia?</strong>
+                 <small>La distribución se activará automáticamente, aunque el líder no esté conectado.</small>
+               </div>
+             </div>

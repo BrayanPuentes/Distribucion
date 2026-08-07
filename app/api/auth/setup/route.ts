@@ -10,7 +10,7 @@ import {
   validateDisplayName,
   validateUsername,
   writeAuthLog,
-} from "../../../../lib/server/auth.ts";
+} from "../../../../lib/server/auth";
 
 export const dynamic = "force-dynamic";
 

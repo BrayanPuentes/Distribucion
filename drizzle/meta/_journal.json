@@ -22,20 +22,6 @@
       "when": 1784958680361,
       "tag": "0002_quiet_dexter_bennett",
       "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "6",
-      "when": 1784999305351,
-      "tag": "0003_hard_ben_parker",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "6",
-      "when": 1785875716251,
-      "tag": "0004_hot_mariko_yashida",
-      "breakpoints": true
     }
   ]
 }
